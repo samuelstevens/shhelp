@@ -27,3 +27,23 @@ Always reference modules by their alias. Never use `from X import *`.
 
 - Use pytest with fixtures and parameterization.
 - Use Hypothesis for property-based tests, especially in helpers.
+
+## Command Runner
+
+A `justfile` is provided only as convenient documentation.
+Do **not** call `just` (the binary may be missing).
+Instead:
+
+1. Open `justfile`, locate the target you need.
+2. Copy the shell lines that follow the target and execute them directly.
+
+Example
+
+```sh
+# don’t run
+just test
+
+# do run
+uv run ruff format --preview .
+uv run pytest --cov shgod --cov-report term
+```
