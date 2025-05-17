@@ -1,10 +1,12 @@
 import dataclasses
+import json
 import os
 import pathlib
 import sys
 
 import beartype
 import tyro
+from rich import print
 
 from . import config, templating, tmux, tooling
 
@@ -29,14 +31,16 @@ class Context:
 
         active, panes = tmux.get_panes()
         system = subprocess.check_output(["uname", "-a"], text=True).strip()
-        shell_value = shell or os.environ.get("SHELL", "")
-        
+        shell = shell or os.environ.get("SHELL", "")
+
         # Get shell aliases
         aliases = ()
         try:
             # Run shell in interactive mode to get aliases
-            alias_cmd = [shell_value, "-ic", "alias"]
-            alias_output = subprocess.check_output(alias_cmd, text=True, stderr=subprocess.DEVNULL).strip()
+            alias_cmd = [shell, "-ic", "alias"]
+            alias_output = subprocess.check_output(
+                alias_cmd, text=True, stderr=subprocess.DEVNULL
+            ).strip()
             if alias_output:
                 aliases = tuple(alias_output.splitlines())
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -46,7 +50,7 @@ class Context:
         object.__setattr__(self, "active", active)
         object.__setattr__(self, "panes", panes)
         object.__setattr__(self, "system", system)
-        object.__setattr__(self, "shell", shell_value)
+        object.__setattr__(self, "shell", shell)
         object.__setattr__(self, "aliases", aliases)
 
 
@@ -73,18 +77,59 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
 
-    system = template.render(active_pane=ctx.active, panes=ctx.panes)
+    system = template.render(
+        active_pane=ctx.active,
+        panes=ctx.panes,
+        system=ctx.system,
+        shell=ctx.shell,
+        aliases=ctx.aliases,
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": query},
+    ]
 
     while True:
-        completion = litellm.completion(
+        resp = litellm.completion(
             model=cfg.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": query},
-            ],
-            tools=tooling.get_tool_schemas(),
+            messages=messages,
+            tools=tooling.get_tool_specs(),
+            api_key=cfg.api_key,
         )
-        breakpoint()
+
+        msg = resp.choices[0].message
+        tcs = msg.tool_calls or []
+
+        if not tcs:
+            print(msg.content.strip())
+            return 0
+
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": msg.tool_calls,
+        })
+
+        for tc in tcs:
+            tool = tooling.get_tool(tc.function.name)
+            if not tool.read_only:
+                breakpoint()
+            try:
+                kwargs = json.loads(tc.function.arguments)
+                # Print the args here and the function we're about to call to the user so they know what's going on. AI!
+                result = tool(**kwargs)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+            except Exception as err:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": str(err),
+                })
 
 
 def main():
