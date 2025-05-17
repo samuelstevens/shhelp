@@ -8,5 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Aider chat agent
 .aider*
+
+# I never use lockfiles :(
 uv.lock
+
+# pytest stuff
+.hypothesis/
+.coverage
