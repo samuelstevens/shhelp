@@ -26,12 +26,12 @@ class Context:
 
     def __init__(self, shell: str | None = None):
         import subprocess
-        
+
         active, panes = tmux.get_panes()
         system = subprocess.check_output(["uname", "-a"], text=True).strip()
         shell_value = shell or os.environ.get("SHELL", "")
-        aliases = tuple()  # Will be populated later
-        
+        # Use $SHELL -ic alias to get the aliases available for use. AI!
+
         object.__setattr__(self, "active", active)
         object.__setattr__(self, "panes", panes)
         object.__setattr__(self, "system", system)
