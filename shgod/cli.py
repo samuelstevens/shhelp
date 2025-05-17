@@ -117,7 +117,8 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                 breakpoint()
             try:
                 kwargs = json.loads(tc.function.arguments)
-                # Print the args here and the function we're about to call to the user so they know what's going on. AI!
+                print(f"Calling tool: [bold blue]{tc.function.name}[/bold blue]")
+                print(f"Arguments: {json.dumps(kwargs, indent=2)}")
                 result = tool(**kwargs)
                 messages.append({
                     "role": "tool",
