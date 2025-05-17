@@ -22,7 +22,7 @@ class Pane:
     id: str
     cwd: str
     active: bool
-    history: tuple[str, ...]
+    history: str
 
 
 def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
@@ -48,7 +48,7 @@ def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
             "-t",  # target this pane
             pane_id,
         ]
-        history = tuple(subprocess.check_output(hist_cmd, text=True).splitlines())
+        history = subprocess.check_output(hist_cmd, text=True).strip()
 
         pane = Pane(id=pane_id, cwd=cwd, active=active == "1", history=history)
         if pane.active:

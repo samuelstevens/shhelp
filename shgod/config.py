@@ -1,7 +1,7 @@
 import dataclasses
+import os
 import pathlib
 import tomllib
-import os
 
 import beartype
 
@@ -19,9 +19,19 @@ class Config:
         history_lines: How many lines of tmux scrollback to include in the prompt.
     """
 
-    api_key: str | None = None
+    api_key: str = ""
     model: str = "gpt-4.1-mini"
     history_lines: int = 200  # reasonable default
+
+
+@beartype.beartype
+def _write_default_cfg() -> None:
+    """Write default config to `~/.config/shgod/config.toml`."""
+    # TODO: include TOML comments with the parsed attribute comments from Config. We can adjust the comments to be under each variable instead of the docstring if that's easier.
+    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CFG_PATH.open("w") as fh:
+        for k, v in dataclasses.asdict(Config()).items():
+            fh.write(f"{k} = {v!r}\n")
 
 
 @beartype.beartype
@@ -29,8 +39,10 @@ def load(cli: Config) -> Config:
     """Return a Config merged from TOML file + env vars + defaults + CLI options."""
     cfg_dict: dict = {}
 
-    if _CFG_PATH.exists():
-        cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
+    if not _CFG_PATH.exists():
+        _write_default_cfg()
+
+    cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
 
     # Override with CLI options that differ from defaults
     default_cfg = Config()

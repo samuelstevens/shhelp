@@ -1,6 +1,6 @@
 import pytest
 
-from .templating import lex, Token
+from .templating import Token, lex
 
 
 def toks(src):

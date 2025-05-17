@@ -4,7 +4,6 @@ Lightweight Jinja2 alternative.
 * *literal text*: everything not inside tags (unchanged)
 * *variable*: `{{ expr }}` (any valid Python eval in the provided context; output str(expr))
 * *for loops*: `{% for x in seq %} ... {% endfor %}` (nested allowed)
-* *if/elif/else*: `{% if cond %} ... {% elif cond2 %} ... {% else %} ... {% endif %}` (nested allowed)
 * *comment*: `{# ... #}` (discarded)
 * *escaping*: `{{{` renders `{{`; raw block not supported
 """
@@ -12,6 +11,7 @@ Lightweight Jinja2 alternative.
 import collections.abc
 import dataclasses
 import pathlib
+
 import beartype
 
 
@@ -25,9 +25,13 @@ class Template:
         Either raw template text or a filesystem path.
     """
 
-    def __init__(self, path_or_str: str):
-        path = pathlib.Path(path_or_str)
-        txt = path.read_text() if path.exists() else path_or_str
+    def __init__(self, path_or_str: str | pathlib.Path):
+        if isinstance(path_or_str, pathlib.Path):
+            txt = path_or_str.read_text() if path_or_str.exists() else str(path_or_str)
+        else:
+            path = pathlib.Path(path_or_str)
+            txt = path.read_text() if path.exists() else path_or_str
+
         self._ast = Parser(lex(txt)).parse()
 
     def render(self, **kwargs) -> str:
@@ -125,20 +129,6 @@ class For(Node):
 
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class If(Node):
-    branches: list[tuple[str | None, collections.abc.Sequence[Node]]] = (
-        dataclasses.field(default_factory=list)
-    )
-
-    def render(self, ctx):
-        for cond, body in self.branches:
-            if cond is None or eval(cond, {}, ctx):
-                return "".join(n.render(ctx) for n in body)
-        return ""
-
-
-@beartype.beartype
 class Parser:
     def __init__(self, tokens: collections.abc.Iterable[Token]):
         self._toks = iter(tokens)
@@ -160,9 +150,7 @@ class Parser:
                 cmd = self.cur.text
                 if cmd.startswith("for "):
                     nodes.append(self._parse_for())
-                elif cmd.startswith("if "):
-                    nodes.append(self._parse_if())
-                elif cmd == "endif" or cmd == "endfor":
+                elif cmd == "endfor":
                     break
                 else:
                     raise SyntaxError(f"unknown stmt {cmd!r}")
@@ -179,20 +167,3 @@ class Parser:
             raise SyntaxError("missing endfor")
         self._next()
         return For(var, seq, body)
-
-    def _parse_if(self):
-        branches: list[tuple[str | None, collections.abc.Sequence[Node]]] = []
-        cond = self.cur.text[3:].strip()  # after "if "
-        self._next()
-        branches.append((cond, self.parse()))
-        while self.cur.text.startswith("elif "):
-            cond = self.cur.text[5:].strip()
-            self._next()
-            branches.append((cond, self.parse()))
-        if self.cur.text == "else":
-            self._next()
-            branches.append((None, self.parse()))
-        if self.cur.text != "endif":
-            raise SyntaxError("missing endif")
-        self._next()
-        return If(branches)

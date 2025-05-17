@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "beartype>=0.20.2",
     "litellm>=1.70.0",
+    "rich>=14.0.0",
     "tyro>=0.9.20",
 ]
 
@@ -16,6 +17,7 @@ shgod = "shgod.cli:main"
 [dependency-groups]
 dev = [
     "hypothesis>=6.131.18",
+    "jsonschema>=4.23.0",
     "pytest>=8.3.5",
     "pytest-console-scripts>=1.4.1",
     "pytest-cov>=6.1.1",
@@ -25,3 +27,7 @@ dev = [
 
 [tool.pytest.ini_options]
 timeout = 10 # seconds per test
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["F722", "E402", "E501"]

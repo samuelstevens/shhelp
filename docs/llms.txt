@@ -29,13 +29,38 @@ Always reference modules by their alias. Never use `from X import *`.
 - Use pytest with fixtures and parameterization.
 - Use Hypothesis for property-based tests, especially in helpers.
 
+## Command Runner
+
+A `justfile` is provided only as convenient documentation.
+Do **not** call `just` (the binary may be missing).
+Instead:
+
+1. Open `justfile`, locate the target you need.
+2. Copy the shell lines that follow the target and execute them directly.
+
+Example
+
+```sh
+# don’t run
+just test
+
+# do run
+uv run ruff format --preview .
+uv run pytest --cov shgod --cov-report term
+```
+
 >>>> README.md
+# shgod
+
+shgod is a tool for answering shell-related questions directly from the command line.
+
+You can ask it how to do something in your shell, or for explanations of specific command-line options.
+
 ## Example Usage
 
 ```sh
-shgod how do I check where OPENROUTER_API_KEY came from in fish?
+shgod where is my OPENROUTER_API_KEY being set?
 ```
-
 
 ```sh
 shgod "can you explain what -a and -F are in tmux list-panes?"
@@ -51,11 +76,16 @@ if __name__ == "__main__":
 
 >>>> cli.py
 import dataclasses
+import json
+import os
+import pathlib
+import sys
 
 import beartype
 import tyro
+from rich import print
 
-from . import tmux
+from . import config, templating, tmux, tooling
 
 
 @beartype.beartype
@@ -67,102 +97,240 @@ class Query:
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
 class Context:
-    pane: tmux.Pane
-    other_panes: tuple[tmux.Pane, ...]
+    active: tmux.Pane
+    panes: tuple[tmux.Pane, ...]
+    system: str
+    shell: str
+    aliases: tuple[str, ...]
 
-    def __init__(self):
-        pane, others = tmux.get_panes()
-        object.__setattr__(self, "pane", pane)
-        object.__setattr__(self, "other_panes", others)
+    def __init__(self, shell: str | None = None):
+        import subprocess
+
+        active, panes = tmux.get_panes()
+        system = subprocess.check_output(["uname", "-a"], text=True).strip()
+        shell = shell or os.environ.get("SHELL", "")
+
+        # Get shell aliases
+        aliases = ()
+        try:
+            # Run shell in interactive mode to get aliases
+            alias_cmd = [shell, "-ic", "alias"]
+            alias_output = subprocess.check_output(
+                alias_cmd, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if alias_output:
+                aliases = tuple(alias_output.splitlines())
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback if getting aliases fails
+            pass
+
+        object.__setattr__(self, "active", active)
+        object.__setattr__(self, "panes", panes)
+        object.__setattr__(self, "system", system)
+        object.__setattr__(self, "shell", shell)
+        object.__setattr__(self, "aliases", aliases)
 
 
 @beartype.beartype
-def ask(words: list[str], /):
+def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
     """
     Ask an LLM for help with shell commands.
 
     Args:
         words: Your query.
     """
+
+    cfg = config.load(cfg)
+
+    import litellm
+
+    if not litellm.supports_function_calling(cfg.model):
+        print(f"Error: The model '{cfg.model}' does not support function calling.")
+        print("Please choose a different model that supports this feature.")
+        return 1
+
+    query = " ".join(words)
     ctx = Context()
-    breakpoint()
+
+    template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
+
+    system = template.render(
+        active_pane=ctx.active,
+        panes=ctx.panes,
+        system=ctx.system,
+        shell=ctx.shell,
+        aliases=ctx.aliases,
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": query},
+    ]
+
+    while True:
+        resp = litellm.completion(
+            model=cfg.model,
+            messages=messages,
+            tools=tooling.get_tool_specs(),
+            api_key=cfg.api_key,
+        )
+
+        msg = resp.choices[0].message
+        tcs = msg.tool_calls or []
+
+        if not tcs:
+            print(msg.content.strip())
+            return 0
+
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": msg.tool_calls,
+        })
+
+        for tc in tcs:
+            tool = tooling.get_tool(tc.function.name)
+            if not tool.read_only:
+                breakpoint()
+            try:
+                kwargs = json.loads(tc.function.arguments)
+                print(f"Calling tool: [bold blue]{tc.function.name}[/bold blue]")
+                print(f"Arguments: {json.dumps(kwargs, indent=2)}")
+                result = tool(**kwargs)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+            except Exception as err:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": str(err),
+                })
 
 
 def main():
-    tyro.cli(ask)
+    sys.exit(tyro.cli(cli))
+
+>>>> config.py
+import dataclasses
+import os
+import pathlib
+import tomllib
+
+import beartype
+
+_CFG_PATH = pathlib.Path("~/.config/shgod/config.toml").expanduser()
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Config:
+    """Runtime options that rarely change between invocations.
+
+    Attributes:
+        api_key: Secret for your LLM backend (OpenAI / Anthropic / etc.). Default None -> fall back to env var `SHGOD_API_KEY` or backend-specific vars like `OPENAI_API_KEY`.
+        model: Identifier sent to the provider, e.g. ``gpt-4o-mini``.
+        history_lines: How many lines of tmux scrollback to include in the prompt.
+    """
+
+    api_key: str = ""
+    model: str = "gpt-4.1-mini"
+    history_lines: int = 200  # reasonable default
+
+
+@beartype.beartype
+def _write_default_cfg() -> None:
+    """Write default config to `~/.config/shgod/config.toml`."""
+    # TODO: include TOML comments with the parsed attribute comments from Config. We can adjust the comments to be under each variable instead of the docstring if that's easier.
+    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CFG_PATH.open("w") as fh:
+        for k, v in dataclasses.asdict(Config()).items():
+            fh.write(f"{k} = {v!r}\n")
+
+
+@beartype.beartype
+def load(cli: Config) -> Config:
+    """Return a Config merged from TOML file + env vars + defaults + CLI options."""
+    cfg_dict: dict = {}
+
+    if not _CFG_PATH.exists():
+        _write_default_cfg()
+
+    cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
+
+    # Override with CLI options that differ from defaults
+    default_cfg = Config()
+    cli_dict = dataclasses.asdict(cli)
+    for field_name, field_value in cli_dict.items():
+        default_value = getattr(default_cfg, field_name)
+        # Only override if the CLI value is not None and different from default
+        if field_value is not None and field_value != default_value:
+            cfg_dict[field_name] = field_value
+
+    if env_key := os.getenv("SHGOD_API_KEY"):
+        cfg_dict["api_key"] = env_key
+
+    cfg = Config(**cfg_dict)
+
+    return cfg
 
 >>>> prompt.j2
-<assistant>
 You are **shgod**, a terse yet precise terminal guru.  
 Think, plan and act autonomously until the task is solved, then yield a final answer for the user.
-</assistant>
 
-<persistence>
 Keep the conversation open; do **not** finish until the user’s request is fully satisfied.
-</persistence>
 
-<tool_calling>
 If you’re missing information, call a tool instead of hallucinating.  
 Prefer **one tool call → reflect → next tool**; avoid blind chains.
-</tool_calling>
 
-<planning>
 Before each tool call:  
-1 Write a short markdown bullet-list plan.  
-2 State *why* the selected tool is needed.  
+
+1. Write a short markdown bullet-list plan.  
+2. State *why* the selected tool is needed.  
+
 After each call: reflect on the output and decide next action.
-</planning>
 
-<tools>
-<tool name="rgrep" description="Recursively grep for PATTERN under DIR. Output format: file:line:match"/>
-<tool name="view"  description="Print file or directory snippets. Args: path, start_line, end_line"/>
-<tool name="create" description="Create a new file with given content"/>
-<tool name="insert" description="Insert text at line N of a file"/>
-<tool name="str_replace" description="Sed-like in-place substitution on a file"/>
-</tools>
+Always warn before any command that writes or deletes.
+Flag actions needing sudo.
+If you can't solve, ask a clarifying question; never invent data.
 
-<response_format>
-1. **If planning** – markdown checklist inside `<plan>` … `</plan>`.  
-2. **Tool calls** – valid JSON exactly as required by the completions.  
-3. **Reflections / final answer** – plain markdown; commands in fenced ```bash blocks.
-</response_format>
+## Style
 
-<style>
 - Use Markdown formatting in your responses
 - ALWAYS place commands (both command blocks and single commands) and literal text lines in a fenced markdown block, with no prefix like $ or #, so that the user can easily copy the line, and so it's displayed correctly in markdown
 - Include comments with # for complex commands
 - Keep responses under 10 lines unless complexity requires more
 - Use bold **text** only for warnings about dangerous operations
 - Break down complex solutions into clear steps
-</style>
 
-<important>
-Always warn before any command that writes or deletes.
-Flag actions needing sudo.
-If you can't solve, ask a clarifying question; never invent data.
-</important>
 
-<environment>
-<system>{{ system_info }}</system>
-<cwd>{{ active_pane.cwd }}</cwd>
-</environment>
+## Environment
 
-<terminal_history>
-<active_pane id="{{ active_pane.id }}">
-{{ active_pane.history }}
-</active_pane>
-<other_panes>
-{% for pane in panes if not pane.active %}
-<pane id="{{ pane.id }}">
-{{ pane.history }}
-</pane>
+* system: {{ system }}
+* shell: {{ shell }}
+* aliases: {{ aliases }}
+* cwd: {{ active_pane.cwd }}
+
+## Active Pane
+
+id: {{ active_pane.id }}
+
+```
+{{ '\n'.join(active_pane.history) }}
+
+## Other Panes
+
+{% for pane in panes %}
+
+### Pane {{ pane.id }}
+
+```
+{{ '\n'.join(pane.history) }}
+```
+
 {% endfor %}
-</other_panes>
-</terminal_history>
-
-<query>
-{{ user_query }}
-</query>
 
 >>>> templating.py
 """
@@ -171,24 +339,248 @@ Lightweight Jinja2 alternative.
 * *literal text*: everything not inside tags (unchanged)
 * *variable*: `{{ expr }}` (any valid Python eval in the provided context; output str(expr))
 * *for loops*: `{% for x in seq %} ... {% endfor %}` (nested allowed)
-* *if/elif/else*: `{% if cond %} ... {% elif cond2 %} ... {% else %} ... {% endif %}` (nested allowed)
 * *comment*: `{# ... #}` (discarded)
 * *escaping*: `{{{` renders `{{`; raw block not supported
 """
+
+import collections.abc
+import dataclasses
+import pathlib
 
 import beartype
 
 
 @beartype.beartype
 class Template:
-    def __init__(self, path_or_str: str): ...
+    """Tiny subset-of-Jinja renderer.
 
-    def render(self, **kwargs) -> str: ...
+    Parameters
+    ----------
+    path_or_str :
+        Either raw template text or a filesystem path.
+    """
+
+    def __init__(self, path_or_str: str | pathlib.Path):
+        if isinstance(path_or_str, pathlib.Path):
+            txt = path_or_str.read_text() if path_or_str.exists() else str(path_or_str)
+        else:
+            path = pathlib.Path(path_or_str)
+            txt = path.read_text() if path.exists() else path_or_str
+
+        self._ast = Parser(lex(txt)).parse()
+
+    def render(self, **kwargs) -> str:
+        return "".join(n.render(dict(kwargs)) for n in self._ast)
+
+
+# lexer
+
+
+TOK_OPEN_VAR = "{{"
+TOK_OPEN_STMT = "{%"
+TOK_OPEN_COMM = "{#"
+TOK_CLOSE_VAR = "}}"
+TOK_CLOSE_STMT = "%}"
+TOK_CLOSE_COMM = "#}"
+
+
+@dataclasses.dataclass(frozen=True)
+class Token:
+    typ: str
+    text: str
+
+
+@beartype.beartype
+def lex(src: str) -> collections.abc.Iterator[Token]:
+    i, n = 0, len(src)
+    while i < n:
+        if src.startswith("{{{", i):  # escape
+            yield Token("TEXT", "{{")
+            i += 3
+            continue
+
+        if src.startswith(TOK_OPEN_VAR, i):
+            j = src.find(TOK_CLOSE_VAR, i + 2)
+            if j == -1:
+                raise SyntaxError("unclosed {{")
+            yield Token("VAR", src[i + 2 : j])
+            i = j + 2
+        elif src.startswith(TOK_OPEN_STMT, i):
+            j = src.find(TOK_CLOSE_STMT, i + 2)
+            if j == -1:
+                raise SyntaxError("unclosed {%")
+            yield Token("STMT", src[i + 2 : j].strip())
+            i = j + 2
+        elif src.startswith(TOK_OPEN_COMM, i):
+            j = src.find(TOK_CLOSE_COMM, i + 2)
+            if j == -1:
+                raise SyntaxError("unclosed {#")
+            i = j + 2  # discard
+        else:  # literal
+            j = src.find("{", i)
+            yield Token("TEXT", src[i : j if j != -1 else n])
+            i = j if j != -1 else n
+    yield Token("EOF", "")
+
+
+@beartype.beartype
+class Node:
+    # base class
+    def render(self, ctx: dict[str, object]) -> str:
+        raise NotImplementedError
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Text(Node):
+    val: str
+
+    def render(self, ctx):
+        return self.val
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Var(Node):
+    expr: str
+
+    def render(self, ctx):
+        return str(eval(self.expr, {}, ctx))
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class For(Node):
+    var: str
+    seq: str
+    body: collections.abc.Sequence[Node]
+
+    def render(self, ctx):
+        out = []
+        for item in eval(self.seq, {}, ctx):
+            ctx[self.var] = item
+            out.append("".join(n.render(ctx) for n in self.body))
+        return "".join(out)
+
+
+@beartype.beartype
+class Parser:
+    def __init__(self, tokens: collections.abc.Iterable[Token]):
+        self._toks = iter(tokens)
+        self._next()
+
+    def _next(self):
+        self.cur = next(self._toks)
+
+    def parse(self) -> list[Node]:
+        nodes = []
+        while self.cur.typ != "EOF":
+            if self.cur.typ == "TEXT":
+                nodes.append(Text(self.cur.text))
+                self._next()
+            elif self.cur.typ == "VAR":
+                nodes.append(Var(self.cur.text.strip()))
+                self._next()
+            elif self.cur.typ == "STMT":
+                cmd = self.cur.text
+                if cmd.startswith("for "):
+                    nodes.append(self._parse_for())
+                elif cmd == "endfor":
+                    break
+                else:
+                    raise SyntaxError(f"unknown stmt {cmd!r}")
+            else:
+                raise SyntaxError(f"unexpected token {self.cur}")
+        return nodes
+
+    # --- helpers ---
+    def _parse_for(self):
+        _, var, _, seq = self.cur.text.split(None, 3)  # "for x in seq"
+        self._next()
+        body = self.parse()
+        if self.cur.text != "endfor":
+            raise SyntaxError("missing endfor")
+        self._next()
+        return For(var, seq, body)
+
+>>>> test_e2e.py
+def test_help(script_runner, tmp_path):
+    """
+    Spawn the real `shgod` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
+    """
+    script_runner.run(
+        ["shgod", "-h"], env={"SHGOD_API_KEY": "DEADBEEF"}, cwd=tmp_path, check=True
+    )
+
+
+def test_non_function_calling_model_fails(script_runner, tmp_path):
+    """
+    Spawn the real `shgod` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
+    """
+    result = script_runner.run(
+        ["shgod", "how do I do nothing?", "--cfg.model", "ollama/llama2"],
+        env={"SHGOD_API_KEY": "DEADBEEF"},
+        cwd=tmp_path,
+    )
+
+    assert result.returncode != 0
+
+>>>> test_lex.py
+import pytest
+
+from .templating import Token, lex
+
+
+def toks(src):
+    """Helper → materialise iterator minus trailing EOF for brevity."""
+    ts = list(lex(src))
+    assert ts[-1] == Token("EOF", "")
+    return ts[:-1]
+
+
+def test_text_only():
+    assert toks("hello") == [Token("TEXT", "hello")]
+
+
+def test_mixed_text_and_var():
+    src = "hi {{ name }}."
+    expect = [
+        Token("TEXT", "hi "),
+        Token("VAR", " name "),
+        Token("TEXT", "."),
+    ]
+    assert toks(src) == expect
+
+
+def test_for_stmt_tokens():
+    src = "{% for x in seq %}body{% endfor %}"
+    expect = [
+        Token("STMT", "for x in seq"),
+        Token("TEXT", "body"),
+        Token("STMT", "endfor"),
+    ]
+    assert toks(src) == expect
+
+
+def test_comment_elided():
+    src = "a{# skip #}b"
+    assert toks(src) == [Token("TEXT", "a"), Token("TEXT", "b")]
+
+
+def test_triple_brace_escape():
+    src = "{{{ not_var }}"
+    # lexer should output literal '{{' then the rest as text
+    assert toks(src)[0] == Token("TEXT", "{{")
+
+
+def test_unclosed_var_raises():
+    with pytest.raises(SyntaxError):
+        list(lex("{{ unclosed"))
 
 >>>> test_templating.py
 import pytest
-from .templating import Template
 
+from .templating import Template
 
 # literals
 
@@ -244,23 +636,9 @@ def test_for_loop_nested_shadow():
     tpl = "{% for x in outer %}{% for x in inner %}{{ x }}{% endfor %}{% endfor %}"
     assert Template(tpl).render(outer=[0, 1], inner=["a"]) == "aa"
 
-
-# if / elif / else
-
-
-def test_if_true_branch():
-    tpl = "{% if ok %}yes{% else %}no{% endif %}"
-    assert Template(tpl).render(ok=True) == "yes"
-
-
-def test_if_false_no_else():
-    tpl = "{% if ok %}yes{% endif %}done"
-    assert Template(tpl).render(ok=False) == "done"
-
-
-def test_if_elif_else_chain():
-    tpl = "{% if n==0 %}zero{% elif n==1 %}one{% else %}many{% endif %}"
-    assert Template(tpl).render(n=7) == "many"
+>>>> test_tooling.py
+def test_all_tool_schemas():
+    pass
 
 >>>> tmux.py
 import dataclasses
@@ -287,11 +665,11 @@ class Pane:
     id: str
     cwd: str
     active: bool
-    history: tuple[str, ...]
+    history: str
 
 
 def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
-    front, others = None, []
+    active, panes = None, []
     fmt = "#{pane_id},#{pane_active},#{pane_current_path}"
     cmd = [
         "tmux",
@@ -313,13 +691,180 @@ def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
             "-t",  # target this pane
             pane_id,
         ]
-        history = tuple(subprocess.check_output(hist_cmd, text=True).splitlines())
+        history = subprocess.check_output(hist_cmd, text=True).strip()
 
         pane = Pane(id=pane_id, cwd=cwd, active=active == "1", history=history)
         if pane.active:
-            front = pane
+            active = pane
         else:
-            others.append(pane)
+            panes.append(pane)
 
-    return front, tuple(others)
+    return active, tuple(panes)
+
+>>>> tooling.py
+import collections.abc
+import dataclasses
+import pathlib
+import subprocess
+
+import beartype
+import jsonschema
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True, slots=True)
+class Tool:
+    """Describe one JSON-function tool plus its Python executor.
+
+    Parameters
+    ----------
+    name          : snake-case identifier shown to the model
+    description   : human text
+    parameters    : valid JSON-schema describing arguments
+    function      : `func(**kwargs)->Any` that *runs* the tool
+    read_only     : if False ask user confirmation before running
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, object]
+    function: collections.abc.Callable[..., object] = dataclasses.field(
+        repr=False, hash=False, compare=False
+    )
+    read_only: bool = False
+
+    def __post_init__(self):
+        jsonschema.Draft202012Validator.check_schema(dict(self.parameters))
+        if self.name not in _GLOBAL_TOOLS:
+            _GLOBAL_TOOLS[self.name] = self
+
+    def spec(self) -> dict[str, object]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+                "strict": True,
+            },
+        }
+
+    def __call__(self, **kwargs) -> object:
+        return self.function(**kwargs)
+
+
+_GLOBAL_TOOLS: dict[str, Tool] = {}
+
+
+@beartype.beartype
+def get_tools() -> list[Tool]:
+    return list(_GLOBAL_TOOLS.values())
+
+
+@beartype.beartype
+def get_tool_specs() -> list[dict[str, object]]:
+    return [tool.spec() for tool in get_tools()]
+
+
+@beartype.beartype
+def get_tool(name: str) -> Tool:
+    if name not in _GLOBAL_TOOLS:
+        raise ValueError(f"Tool {name} not registered.")
+    return _GLOBAL_TOOLS[name]
+
+
+def _run_ripgrep(pattern: str, path: str) -> str:
+    base = pathlib.Path(path).expanduser().resolve()
+    if not base.is_dir():
+        raise NotADirectoryError(base)
+
+    cmd = ["rg", "-n", "--color", "never", "-e", pattern, str(base)]
+    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+    if proc.returncode not in (0, 1):  # 1 = no matches
+        raise RuntimeError(proc.stderr.strip())
+    return proc.stdout
+
+
+ripgrep = Tool(
+    name="ripgrep",
+    description="Recursively look (grep) for PATTERN in a path PATH. Output path:line:match.",
+    read_only=True,
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "Regex/text to search for",
+            },
+            "path": {"type": "string", "description": "Directory path (can be .)"},
+        },
+        "required": ["pattern", "path"],
+        "additionalProperties": False,
+    },
+    function=_run_ripgrep,
+)
+
+
+def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
+    base = pathlib.Path(dir or ".").expanduser().resolve()
+    if not base.is_dir():
+        raise NotADirectoryError(base)
+
+    cmd = ["fd", "--color", "never"]
+    if regex:
+        cmd.append(regex)
+    cmd.append(str(base))
+
+    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+    if proc.returncode not in (0, 1):  # 1 = no matches
+        raise RuntimeError(proc.stderr.strip())
+    return proc.stdout
+
+
+Tool(
+    name="find",
+    description="Find filepaths with a regular expression. Omit regex to list everything; omit dir for CWD.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "regex": {
+                "type": ["string", "null"],
+                "description": "Regex to match filenames; null or missing -> no filter",
+            },
+            "dir": {
+                "type": ["string", "null"],
+                "description": "Directory to search; null or missing -> current dir",
+            },
+        },
+        "required": ["regex", "dir"],
+        "additionalProperties": False,
+    },
+    function=_run_find,
+    read_only=True,
+)
+
+
+# def _run_shell(*, cmd: str) -> str:
+#     proc = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=60)
+#     out = f"$ {cmd}\n{proc.stdout}"
+#     if proc.stderr:
+#         out += f"\n[stderr]\n{proc.stderr}"
+#     out += f"\n[exit {proc.returncode}]"
+#     return out
+
+
+# shell_tool = Tool(
+#     name="shell",
+#     description="Execute an arbitrary shell command in the current working directory.",
+#     parameters={
+#         "type": "object",
+#         "properties": {
+#             "cmd": {"type": "string", "description": "Exact command line to run"},
+#         },
+#         "required": ["cmd"],
+#         "additionalProperties": False,
+#     },
+#     function=_run_shell,
+#     read_only=False,
+# )
 
