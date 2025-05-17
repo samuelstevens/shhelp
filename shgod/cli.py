@@ -30,7 +30,18 @@ class Context:
         active, panes = tmux.get_panes()
         system = subprocess.check_output(["uname", "-a"], text=True).strip()
         shell_value = shell or os.environ.get("SHELL", "")
-        # Use $SHELL -ic alias to get the aliases available for use. AI!
+        
+        # Get shell aliases
+        aliases = ()
+        try:
+            # Run shell in interactive mode to get aliases
+            alias_cmd = [shell_value, "-ic", "alias"]
+            alias_output = subprocess.check_output(alias_cmd, text=True, stderr=subprocess.DEVNULL).strip()
+            if alias_output:
+                aliases = tuple(alias_output.splitlines())
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback if getting aliases fails
+            pass
 
         object.__setattr__(self, "active", active)
         object.__setattr__(self, "panes", panes)
