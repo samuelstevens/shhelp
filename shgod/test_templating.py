@@ -78,6 +78,36 @@ def test_if_elif_else_chain():
     assert Template(tpl).render(n=7) == "many"
 
 
+# interaction of loops and conditionals
+
+
+def test_loop_with_inner_if_else():
+    tpl = "{% for x in seq %}{% if x > 1 %}{{ x }}{% else %}-{% endif %}{% endfor %}"
+    assert Template(tpl).render(seq=[0, 1, 2]) == "--2"
+
+
+def test_loop_in_each_if_branch():
+    tpl = "{% if show %}{% for x in seq %}{{ x }}{% endfor %}{% else %}{% for x in other %}{{ x }}{% endfor %}{% endif %}"
+    assert Template(tpl).render(show=True, seq=[1], other=[2]) == "1"
+    assert Template(tpl).render(show=False, seq=[1], other=[2]) == "2"
+
+
+def test_loop_variable_scope_with_if():
+    tpl = "{{ x }}{% for x in seq %}{% if True %}{{ x }}{% endif %}{% endfor %}{{ x }}"
+    assert Template(tpl).render(x="a", seq=["b"]) == "abba"
+
+
+def test_nested_loops_with_if():
+    tpl = "{% for x in outer %}{% if x %}{% for y in inner %}{{ y }}{% endfor %}{% else %}x{% endif %}{% endfor %}"
+    assert Template(tpl).render(outer=[0, 1], inner=["z"]) == "xz"
+
+
+def test_if_around_loop_and_else_loop():
+    tpl = "{% if ok %}{% for x in seq %}{{ x }}{% endfor %}{% else %}{% for x in seq %}-{% endfor %}{% endif %}"
+    assert Template(tpl).render(ok=True, seq=[1, 2]) == "12"
+    assert Template(tpl).render(ok=False, seq=[1, 2]) == "--"
+
+
 # Property tests
 
 
