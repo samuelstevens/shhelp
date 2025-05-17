@@ -33,10 +33,10 @@ def load(cli: Config) -> Config:
         cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
 
     # Override with CLI options that differ from defaults
-    default_config = Config()
+    default_cfg = Config()
     cli_dict = dataclasses.asdict(cli)
     for field_name, field_value in cli_dict.items():
-        default_value = getattr(default_config, field_name)
+        default_value = getattr(default_cfg, field_name)
         # Only override if the CLI value is not None and different from default
         if field_value is not None and field_value != default_value:
             cfg_dict[field_name] = field_value

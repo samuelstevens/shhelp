@@ -1,5 +1,6 @@
 import dataclasses
 import pathlib
+import sys
 
 import beartype
 import tyro

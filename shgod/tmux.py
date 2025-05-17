@@ -26,7 +26,7 @@ class Pane:
 
 
 def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
-    front, others = None, []
+    active, panes = None, []
     fmt = "#{pane_id},#{pane_active},#{pane_current_path}"
     cmd = [
         "tmux",
@@ -52,8 +52,8 @@ def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
 
         pane = Pane(id=pane_id, cwd=cwd, active=active == "1", history=history)
         if pane.active:
-            front = pane
+            active = pane
         else:
-            others.append(pane)
+            panes.append(pane)
 
-    return front, tuple(others)
+    return active, tuple(panes)
