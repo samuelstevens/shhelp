@@ -32,15 +32,14 @@ def load(cli: Config) -> Config:
     if _CFG_PATH.exists():
         cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
 
-    # Can you make this automatic, so that when we add new fields to the config, we don't have to update this? Maybe with dataclasses.asdict or something? AI!
-    if cli.api_key is not None:
-        cfg_dict["api_key"] = cli.api_key
-    if cli.model != Config().model:  # If CLI model differs from default
-        cfg_dict["model"] = cli.model
-    if (
-        cli.history_lines != Config().history_lines
-    ):  # If CLI history_lines differs from default
-        cfg_dict["history_lines"] = cli.history_lines
+    # Override with CLI options that differ from defaults
+    default_config = Config()
+    cli_dict = dataclasses.asdict(cli)
+    for field_name, field_value in cli_dict.items():
+        default_value = getattr(default_config, field_name)
+        # Only override if the CLI value is not None and different from default
+        if field_value is not None and field_value != default_value:
+            cfg_dict[field_name] = field_value
 
     if env_key := os.getenv("SHGOD_API_KEY"):
         cfg_dict["api_key"] = env_key
