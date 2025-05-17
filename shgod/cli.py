@@ -115,6 +115,7 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
             tool = tooling.get_tool(tc.function.name)
             if not tool.read_only:
                 breakpoint()
+
             try:
                 kwargs = json.loads(tc.function.arguments)
                 print(f"Calling tool: [bold blue]{tc.function.name}[/bold blue]")
@@ -131,6 +132,7 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                     "tool_call_id": tc.id,
                     "content": str(err),
                 })
+                # Print the error to show the user. Then ask if they want to continue. If not, simply return 1. AI!
 
 
 def main():
