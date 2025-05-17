@@ -1,0 +1,20 @@
+[project]
+name = "shgod"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beartype>=0.20.2",
+    "tyro>=0.9.20",
+]
+
+[project.scripts]
+shgod = "shgod.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.131.18",
+    "pytest>=8.3.5",
+    "pytest-cov>=6.1.1",
+]
