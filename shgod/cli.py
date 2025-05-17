@@ -38,8 +38,9 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
     cfg = config.load(cfg)
 
     if not litellm.supports_function_calling(cfg.model):
-        # Explain to the user that the model doesn't support function calling and return with a bad exit code. AI!
-        pass
+        print(f"Error: The model '{cfg.model}' does not support function calling.")
+        print("Please choose a different model that supports this feature.")
+        return 1
 
     query = " ".join(words)
     ctx = Context()
