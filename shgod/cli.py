@@ -132,7 +132,9 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                     "tool_call_id": tc.id,
                     "content": str(err),
                 })
-                # Print the error to show the user. Then ask if they want to continue. If not, simply return 1. AI!
+                print(f"[bold red]Error:[/bold red] {err}")
+                if input("Do you want to continue? (y/n): ").lower() != "y":
+                    return 1
 
 
 def main():
