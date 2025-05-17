@@ -32,22 +32,11 @@ def load(cli: Config) -> Config:
     if _CFG_PATH.exists():
         cfg_dict.update(tomllib.loads(_CFG_PATH.read_text()))
 
-    cfg = Config(**cfg_dict)  # file overrides defaults
+    # Override defaults and TOML file with CLI options. AI!
 
-    # Override with CLI options
-    if cli.api_key is not None:
-        cfg_dict["api_key"] = cli.api_key
-    if cli.model != Config().model:  # If CLI model differs from default
-        cfg_dict["model"] = cli.model
-    if cli.history_lines != Config().history_lines:  # If CLI history_lines differs from default
-        cfg_dict["history_lines"] = cli.history_lines
-    
-    # Create new config with all overrides
-    cfg = Config(**cfg_dict)
-    
-    # Environment variables take highest precedence
     if env_key := os.getenv("SHGOD_API_KEY"):
         cfg_dict["api_key"] = env_key
-        cfg = Config(**cfg_dict)
+
+    cfg = Config(**cfg_dict)
 
     return cfg
