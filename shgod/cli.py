@@ -5,7 +5,7 @@ import sys
 import beartype
 import tyro
 
-from . import tmux, templating, config
+from . import config, templating, tmux, tooling
 
 
 @beartype.beartype
@@ -19,9 +19,13 @@ class Query:
 class Context:
     active: tmux.Pane
     panes: tuple[tmux.Pane, ...]
+    system: str
+    shell: str
+    aliases: tuple[str, ...]
 
-    def __init__(self):
+    def __init__(self, shell: str | None = None):
         active, panes = tmux.get_panes()
+        # Add system from uname -a AI!
         object.__setattr__(self, "active", active)
         object.__setattr__(self, "panes", panes)
 
@@ -34,9 +38,10 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
     Args:
         words: Your query.
     """
-    import litellm
 
     cfg = config.load(cfg)
+
+    import litellm
 
     if not litellm.supports_function_calling(cfg.model):
         print(f"Error: The model '{cfg.model}' does not support function calling.")
@@ -48,16 +53,18 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
 
-    prompt = template.render(
-        query=query,
-        active_pane=ctx.active,
-        panes=ctx.panes,
-    )
-    breakpoint()
+    system = template.render(active_pane=ctx.active, panes=ctx.panes)
 
-    # while True:
-    #     output, tool_calls = llm(prompt)
-    #     print(
+    while True:
+        completion = litellm.completion(
+            model=cfg.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+            ],
+            tools=tooling.get_tool_schemas(),
+        )
+        breakpoint()
 
 
 def main():
