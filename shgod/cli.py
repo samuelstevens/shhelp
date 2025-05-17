@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import pathlib
 import sys
 
@@ -24,10 +25,18 @@ class Context:
     aliases: tuple[str, ...]
 
     def __init__(self, shell: str | None = None):
+        import subprocess
+        
         active, panes = tmux.get_panes()
-        # Add system from uname -a AI!
+        system = subprocess.check_output(["uname", "-a"], text=True).strip()
+        shell_value = shell or os.environ.get("SHELL", "")
+        aliases = tuple()  # Will be populated later
+        
         object.__setattr__(self, "active", active)
         object.__setattr__(self, "panes", panes)
+        object.__setattr__(self, "system", system)
+        object.__setattr__(self, "shell", shell_value)
+        object.__setattr__(self, "aliases", aliases)
 
 
 @beartype.beartype
