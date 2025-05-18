@@ -29,7 +29,7 @@ class Pane:
 @beartype.beartype
 def get_panes() -> tuple[Pane, list[Pane]]:
     active_pane, other_panes = None, []
-    active_id = os.environ.get("TMUX_PANE")
+    active_id = os.getenv("TMUX_PANE")
     fmt = "#{pane_id},#{pane_current_path}"
     cmd = [
         "tmux",

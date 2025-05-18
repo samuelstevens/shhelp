@@ -25,7 +25,7 @@ class Context:
 
         active, panes = tmux.get_panes()
         system = subprocess.check_output(["uname", "-a"], text=True).strip()
-        shell = shell or os.environ.get("SHELL", "")
+        shell = shell or os.getenv("SHELL", "")
 
         # Get shell aliases
         aliases = ()
@@ -121,22 +121,30 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
             "tool_calls": msg.tool_calls,
         })
 
+        deny_notes = []
         for tc in msg.tool_calls:
             tool = tooling.get_tool(tc.function.name)
 
             try:
                 kwargs = json.loads(tc.function.arguments)
-                if not ui.confirm(
+                if ui.confirm(
                     f"Run tool {tc.function.name}: <cmd>{tool.fmt(**kwargs)}</cmd>?"
                 ):
-                    return 0
-                result = tool(**kwargs)
-                ui.echo(result)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
+                    result = tool(**kwargs)
+                    ui.echo(result)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+                else:
+                    note = ui.ask_tool_skip_reason(tc.function.name)
+                    deny_notes.append(f"{tc.function.name}: {note}")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"denied by user: {note}",
+                    })
             except Exception as err:
                 messages.append({
                     "role": "tool",
@@ -144,6 +152,9 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                     "content": str(err),
                 })
                 ui.echo(f"<warn>Error:</warn> {err}")
+
+        if deny_notes:
+            messages.append({"role": "user", "content": "\n".join(deny_notes)})
 
 
 def main():
