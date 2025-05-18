@@ -5,16 +5,34 @@ import pathlib
 import sys
 
 import beartype
+import litellm
+import prompt_toolkit as ptk
 import tyro
-from rich import print
 
 from . import config, templating, tmux, tooling
 
+session = ptk.PromptSession()
+
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Query:
-    msg: str
+def prompt_with_exit(msg: str) -> int:
+    """
+    Ask user `msg` and return -1 to proceed or 0+ to terminate.
+    """
+    try:
+        ans = session.prompt(ptk.HTML(msg + "\ncontinue [Y/n]: "))
+    except EOFError:  # Ctrl-D
+        return 0
+
+    if ans.strip().lower() in ("", "y", "yes"):
+        return -1
+
+    return 0
+
+
+@beartype.beartype
+def log(msg: str):
+    ptk.print_formatted_text(ptk.HTML(msg))
 
 
 @beartype.beartype
@@ -65,8 +83,6 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     cfg = config.load(cfg)
 
-    import litellm
-
     if not litellm.supports_function_calling(cfg.model):
         print(f"Error: The model '{cfg.model}' does not support function calling.")
         print("Please choose a different model that supports this feature.")
@@ -89,19 +105,39 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         {"role": "user", "content": query},
     ]
 
+    usd_per_tok = litellm.model_cost[cfg.model]["input_cost_per_token"]
+
+    @beartype.beartype
+    def get_costs() -> tuple[list[tuple[int, float]], float]:
+        """ """
+        toks_per_msg = [
+            litellm.token_counter(model=cfg.model, messages=[m]) for m in messages
+        ]
+        usd_per_msg = [usd_per_tok * toks for toks in toks_per_msg]
+        usd_total = sum(usd_per_msg)
+        return list(zip(toks_per_msg, usd_per_msg)), usd_total
+
     while True:
-        resp = litellm.completion(
+        per_msg, usd = get_costs()
+        msg = f"<b>Ask {cfg.model}?:</b> ${usd:.2f}"
+        if usd < 0.01:
+            msg = f"<b>Ask {cfg.model}?</b> {usd * 100:.2f}¢"
+        code = prompt_with_exit(msg)
+        if code >= 0:
+            sys.exit(code)
+
+        llm_resp = litellm.completion(
             model=cfg.model,
             messages=messages,
             tools=tooling.get_tool_specs(),
             api_key=cfg.api_key,
         )
 
-        msg = resp.choices[0].message
+        msg = llm_resp.choices[0].message
         tcs = msg.tool_calls or []
 
         # Print agent response.
-        print(msg.content.strip())
+        log(msg.content.strip())
 
         if not tcs:
             return 0
@@ -114,15 +150,16 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
         for tc in tcs:
             tool = tooling.get_tool(tc.function.name)
-            if not tool.read_only:
-                breakpoint()
 
             try:
                 kwargs = json.loads(tc.function.arguments)
-                print(f"Calling tool: [bold blue]{tool.name}[/bold blue]:")
-                print(tool)
+                code = prompt_with_exit(
+                    f"Run tool {tc.function.name} '{tool.fmt(**kwargs)}'?"
+                )
+                if code >= 0:
+                    sys.exit(code)
                 result = tool(**kwargs)
-                print(result)
+                log(result)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -134,9 +171,7 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                     "tool_call_id": tc.id,
                     "content": str(err),
                 })
-                print(f"[bold red]Error:[/bold red] {err}")
-                if input("Do you want to continue? (y/n): ").lower() != "y":
-                    return 1
+                log(f"<crimson>Error:</crimson> {err}")
 
 
 def main():

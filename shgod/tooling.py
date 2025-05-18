@@ -10,24 +10,24 @@ import jsonschema
 @beartype.beartype
 @dataclasses.dataclass(frozen=True, slots=True)
 class Tool:
-    """Describe one JSON-function tool plus its Python executor.
-
-    Parameters
-    ----------
-    name          : snake-case identifier shown to the model
-    description   : human text
-    parameters    : valid JSON-schema describing arguments
-    function      : `func(**kwargs)->Any` that *runs* the tool
-    read_only     : if False ask user confirmation before running
-    """
+    """Describes a JSON-function tool plus its Python function."""
 
     name: str
+    """snake-case identifier shown to the model"""
     description: str
+    """natural langauage description of the tool."""
     parameters: dict[str, object]
-    function: collections.abc.Callable[..., object] = dataclasses.field(
+    """valid JSON-schema describing arguments"""
+    run: collections.abc.Callable[..., object] = dataclasses.field(
         repr=False, hash=False, compare=False
     )
+    """`run(**kwargs)->Any` that *runs* the tool"""
+    fmt: collections.abc.Callable[..., str] = dataclasses.field(
+        repr=False, hash=False, compare=False
+    )
+    """`fmt(**kwargs)->str` that formats the tool about to be called."""
     read_only: bool = False
+    """Whether the function makes any changes to disk."""
 
     def __post_init__(self):
         jsonschema.Draft202012Validator.check_schema(dict(self.parameters))
@@ -46,7 +46,7 @@ class Tool:
         }
 
     def __call__(self, **kwargs) -> object:
-        return self.function(**kwargs)
+        return self.run(**kwargs)
 
 
 _GLOBAL_TOOLS: dict[str, Tool] = {}
@@ -69,38 +69,47 @@ def get_tool(name: str) -> Tool:
     return _GLOBAL_TOOLS[name]
 
 
-def _run_ripgrep(pattern: str, path: str) -> str:
+@beartype.beartype
+def _run_ripgrep(regex: str, path: str) -> str:
     base = pathlib.Path(path).expanduser().resolve()
     if not base.is_dir():
         raise NotADirectoryError(base)
 
-    cmd = ["rg", "-n", "--color", "never", "-e", pattern, str(base)]
+    cmd = ["rg", "-n", "--color", "never", "-e", regex, str(base)]
+    print(" ".join(cmd))
     proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
     if proc.returncode not in (0, 1):  # 1 = no matches
         raise RuntimeError(proc.stderr.strip())
     return proc.stdout
 
 
-ripgrep = Tool(
+@beartype.beartype
+def _fmt_ripgrep(regex: str, path: str) -> str:
+    return f"rg {regex} {path}"
+
+
+Tool(
     name="ripgrep",
-    description="Recursively look (grep) for PATTERN in a path PATH. Output path:line:match.",
+    description="Recursively look (grep) for REGEX in a path PATH. Output path:line:match.",
     read_only=True,
     parameters={
         "type": "object",
         "properties": {
-            "pattern": {
+            "regex": {
                 "type": "string",
                 "description": "Regex/text to search for",
             },
             "path": {"type": "string", "description": "Directory path (can be .)"},
         },
-        "required": ["pattern", "path"],
+        "required": ["regex", "path"],
         "additionalProperties": False,
     },
-    function=_run_ripgrep,
+    run=_run_ripgrep,
+    fmt=_fmt_ripgrep,
 )
 
 
+@beartype.beartype
 def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
     base = pathlib.Path(dir or ".").expanduser().resolve()
     if not base.is_dir():
@@ -111,10 +120,16 @@ def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
         cmd.append(regex)
     cmd.append(str(base))
 
+    print(" ".join(cmd))
     proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
     if proc.returncode not in (0, 1):  # 1 = no matches
         raise RuntimeError(proc.stderr.strip())
     return proc.stdout
+
+
+@beartype.beartype
+def _fmt_find(regex: str, path: str) -> str:
+    return f"fd {regex} {path}"
 
 
 Tool(
@@ -135,7 +150,8 @@ Tool(
         "required": ["regex", "dir"],
         "additionalProperties": False,
     },
-    function=_run_find,
+    run=_run_find,
+    fmt=_fmt_find,
     read_only=True,
 )
 
