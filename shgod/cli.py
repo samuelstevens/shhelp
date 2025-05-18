@@ -74,12 +74,11 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     query = " ".join(words)
     ctx = Context()
-
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
 
     system = template.render(
         active_pane=ctx.active,
-        panes=ctx.panes,
+        # panes=ctx.panes,
         system=ctx.system,
         shell=ctx.shell,
         aliases=ctx.aliases,
@@ -101,8 +100,10 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         msg = resp.choices[0].message
         tcs = msg.tool_calls or []
 
+        # Print agent response.
+        print(msg.content.strip())
+
         if not tcs:
-            print(msg.content.strip())
             return 0
 
         messages.append({
@@ -118,9 +119,10 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
             try:
                 kwargs = json.loads(tc.function.arguments)
-                print(f"Calling tool: [bold blue]{tc.function.name}[/bold blue]")
-                print(f"Arguments: {json.dumps(kwargs, indent=2)}")
+                print(f"Calling tool: [bold blue]{tool.name}[/bold blue]:")
+                print(tool)
                 result = tool(**kwargs)
+                print(result)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,

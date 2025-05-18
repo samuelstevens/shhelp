@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import subprocess
 
 import beartype
@@ -25,18 +26,19 @@ class Pane:
     history: str
 
 
-def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
-    active, panes = None, []
-    fmt = "#{pane_id},#{pane_active},#{pane_current_path}"
+@beartype.beartype
+def get_panes() -> tuple[Pane, list[Pane]]:
+    active_pane, other_panes = None, []
+    active_id = os.environ.get("TMUX_PANE")
+    fmt = "#{pane_id},#{pane_current_path}"
     cmd = [
         "tmux",
         "list-panes",
-        "-a",  # all sessions
         "-F",  # custom format
         fmt,
     ]
     for line in subprocess.check_output(cmd, text=True).splitlines():
-        pane_id, active, cwd = line.split(",", 2)
+        pane_id, cwd = line.split(",", 2)
 
         hist_cmd = [
             "tmux",
@@ -50,10 +52,10 @@ def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
         ]
         history = subprocess.check_output(hist_cmd, text=True).strip()
 
-        pane = Pane(id=pane_id, cwd=cwd, active=active == "1", history=history)
+        pane = Pane(id=pane_id, cwd=cwd, active=pane_id == active_id, history=history)
         if pane.active:
-            active = pane
+            active_pane = pane
         else:
-            panes.append(pane)
+            other_panes.append(pane)
 
-    return active, tuple(panes)
+    return active_pane, other_panes

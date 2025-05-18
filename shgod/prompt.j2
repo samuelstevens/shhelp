@@ -36,19 +36,16 @@ If you can't solve, ask a clarifying question; never invent data.
 
 ## Active Pane
 
-id: {{ active_pane.id }}
+* cwd: {{ active_pane.cwd }}
 
 ```
-{{ '\n'.join(active_pane.history) }}
+{{ active_pane.history }}
 
-## Other Panes
-
-{% for pane in panes %}
-
-### Pane {{ pane.id }}
-
-```
-{{ '\n'.join(pane.history) }}
-```
-
-{% endfor %}
+{# ## Other Panes #}
+{# {% for pane in panes %} #}
+{# ### Pane {{ pane.id }} #}
+{# * cwd: {{ pane.cwd }} #}
+{# ``` #}
+{# {{ pane.history }} #}
+{# ``` #}
+{# {% endfor %} #}
