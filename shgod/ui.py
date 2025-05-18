@@ -4,11 +4,11 @@ import prompt_toolkit as ptk
 from . import unix
 
 _STYLE = ptk.styles.Style.from_dict({
-    "hl": "bold ansicyan",
+    "hl": "ansicyan",
     "cost": "ansigreen",
-    "warn": "ansired",
-    "prompt": "italic",
-    "cmd": "ansiyellow",
+    "warn": "bold ansired",
+    "prompt": "bold",
+    "cmd": "italic ansiyellow",
 })
 
 _SESSION = ptk.PromptSession(
@@ -46,7 +46,7 @@ def confirm(html: str, *, default_yes: bool = True) -> bool:
 @beartype.beartype
 def confirm_next_request(tokens: int, cost_usd: float) -> bool:
     msg = (
-        f"<hl>next-request</hl>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
+        f"<highlight>Next request</highlight>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
         "continue? [Y/n]:"
     )
     return confirm(msg)

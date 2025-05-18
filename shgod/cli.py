@@ -126,11 +126,10 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
             try:
                 kwargs = json.loads(tc.function.arguments)
-                code = ui.confirm(
-                    f"Run tool {tc.function.name} <cmd>{tool.fmt(**kwargs)}</cmd>?"
-                )
-                if code >= 0:
-                    sys.exit(code)
+                if not ui.confirm(
+                    f"Run tool {tc.function.name}: <cmd>{tool.fmt(**kwargs)}</cmd>?"
+                ):
+                    return 0
                 result = tool(**kwargs)
                 ui.echo(result)
                 messages.append({
@@ -144,7 +143,7 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
                     "tool_call_id": tc.id,
                     "content": str(err),
                 })
-                log(f"<crimson>Error:</crimson> {err}")
+                ui.echo(f"<warn>Error:</warn> {err}")
 
 
 def main():

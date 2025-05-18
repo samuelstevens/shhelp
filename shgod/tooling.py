@@ -110,12 +110,12 @@ Tool(
 
 
 @beartype.beartype
-def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
-    base = pathlib.Path(dir or ".").expanduser().resolve()
+def _run_find(*, regex: str | None = None, path: str | None = None) -> str:
+    base = pathlib.Path(path or ".").expanduser().resolve()
     if not base.is_dir():
         raise NotADirectoryError(base)
 
-    cmd = ["fd", "--color", "never"]
+    cmd = ["fd", "--hidden", "--no-ignore", "--color", "never"]
     if regex:
         cmd.append(regex)
     cmd.append(str(base))
@@ -129,12 +129,12 @@ def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
 
 @beartype.beartype
 def _fmt_find(regex: str, path: str) -> str:
-    return f"fd {regex} {path}"
+    return f"fd --hidden --no-ignore {regex} {path}"
 
 
 Tool(
     name="find",
-    description="Find filepaths with a regular expression. Omit regex to list everything; omit dir for CWD.",
+    description="Find filepaths with a regular expression. Omit regex to list everything; omit path for CWD.",
     parameters={
         "type": "object",
         "properties": {
@@ -142,12 +142,12 @@ Tool(
                 "type": ["string", "null"],
                 "description": "Regex to match filenames; null or missing -> no filter",
             },
-            "dir": {
+            "path": {
                 "type": ["string", "null"],
                 "description": "Directory to search; null or missing -> current dir",
             },
         },
-        "required": ["regex", "dir"],
+        "required": ["regex", "path"],
         "additionalProperties": False,
     },
     run=_run_find,
