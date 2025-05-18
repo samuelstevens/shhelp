@@ -6,33 +6,9 @@ import sys
 
 import beartype
 import litellm
-import prompt_toolkit as ptk
 import tyro
 
-from . import config, templating, tmux, tooling
-
-session = ptk.PromptSession()
-
-
-@beartype.beartype
-def prompt_with_exit(msg: str) -> int:
-    """
-    Ask user `msg` and return -1 to proceed or 0+ to terminate.
-    """
-    try:
-        ans = session.prompt(ptk.HTML(msg + "\ncontinue [Y/n]: "))
-    except EOFError:  # Ctrl-D
-        return 0
-
-    if ans.strip().lower() in ("", "y", "yes"):
-        return -1
-
-    return 0
-
-
-@beartype.beartype
-def log(msg: str):
-    ptk.print_formatted_text(ptk.HTML(msg))
+from . import config, templating, tmux, tooling, ui
 
 
 @beartype.beartype
@@ -108,23 +84,20 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
     usd_per_tok = litellm.model_cost[cfg.model]["input_cost_per_token"]
 
     @beartype.beartype
-    def get_costs() -> tuple[list[tuple[int, float]], float]:
+    def get_costs() -> tuple[int, float]:
         """ """
         toks_per_msg = [
             litellm.token_counter(model=cfg.model, messages=[m]) for m in messages
         ]
         usd_per_msg = [usd_per_tok * toks for toks in toks_per_msg]
         usd_total = sum(usd_per_msg)
-        return list(zip(toks_per_msg, usd_per_msg)), usd_total
+        toks_total = sum(toks_per_msg)
+        return toks_total, usd_total
 
     while True:
-        per_msg, usd = get_costs()
-        msg = f"<b>Ask {cfg.model}?:</b> ${usd:.2f}"
-        if usd < 0.01:
-            msg = f"<b>Ask {cfg.model}?</b> {usd * 100:.2f}¢"
-        code = prompt_with_exit(msg)
-        if code >= 0:
-            sys.exit(code)
+        toks, usd = get_costs()
+        if not ui.confirm_next_request(toks, usd):
+            return 0
 
         llm_resp = litellm.completion(
             model=cfg.model,
@@ -134,12 +107,12 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         )
 
         msg = llm_resp.choices[0].message
-        tcs = msg.tool_calls or []
 
         # Print agent response.
-        log(msg.content.strip())
+        ui.echo(msg.content.strip())
 
-        if not tcs:
+        if not msg.tool_calls:
+            # Print total session cost.
             return 0
 
         messages.append({
@@ -148,18 +121,18 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
             "tool_calls": msg.tool_calls,
         })
 
-        for tc in tcs:
+        for tc in msg.tool_calls:
             tool = tooling.get_tool(tc.function.name)
 
             try:
                 kwargs = json.loads(tc.function.arguments)
-                code = prompt_with_exit(
-                    f"Run tool {tc.function.name} '{tool.fmt(**kwargs)}'?"
+                code = ui.confirm(
+                    f"Run tool {tc.function.name} <cmd>{tool.fmt(**kwargs)}</cmd>?"
                 )
                 if code >= 0:
                     sys.exit(code)
                 result = tool(**kwargs)
-                log(result)
+                ui.echo(result)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
