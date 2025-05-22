@@ -5,10 +5,9 @@ import pathlib
 import sys
 
 import beartype
-import litellm
 import tyro
 
-from . import config, llms, templating, tmux, tooling, ui
+from . import config, tmux, tooling
 
 
 @beartype.beartype
@@ -56,6 +55,7 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
     Args:
         words: Your query.
     """
+    import litellm
 
     cfg = config.load(cfg)
 
@@ -66,6 +66,10 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     query = " ".join(words)
     ctx = Context()
+
+    # Need templating
+    from . import templating
+
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
 
     system = template.render(
@@ -76,9 +80,15 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         aliases=ctx.aliases,
     )
 
+    # Need llms
+    from . import llms
+
     conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
     conversation.system(system)
     conversation.user(query)
+
+    # Need ui.
+    from . import ui
 
     while True:
         toks, usd = conversation.get_costs()

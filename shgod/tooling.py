@@ -3,7 +3,6 @@ import pathlib
 import subprocess
 
 import beartype
-import jsonschema
 
 
 @beartype.beartype
@@ -20,6 +19,8 @@ class Tool(abc.ABC):
     """Whether the function makes any changes to disk."""
 
     def __init_subclass__(cls):
+        import jsonschema
+
         jsonschema.Draft202012Validator.check_schema(cls.parameters)
         _GLOBAL_REGISTRY[cls.name] = cls
 
