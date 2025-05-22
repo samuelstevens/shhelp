@@ -53,10 +53,6 @@ def confirm_next_request(tokens: int, cost_usd: float) -> bool:
 
 
 @beartype.beartype
-def confirm_tool(tool: str) -> bool: ...
-
-
-@beartype.beartype
 def ask_tool_skip_reason(tool: str) -> str:
     """Return the user's reason for denying a tool."""
     try:
