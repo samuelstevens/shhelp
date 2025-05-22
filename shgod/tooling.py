@@ -21,38 +21,40 @@ class Tool(abc.ABC):
 
     def __init_subclass__(cls):
         jsonschema.Draft202012Validator.check_schema(cls.parameters)
-        _GLOBAL_REGISTRY[cls.name] = cls()  # auto-register
+        _GLOBAL_REGISTRY[cls.name] = cls
 
-    def spec(self):
+    @classmethod
+    def spec(cls):
         return {
             "type": "function",
             "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
+                "name": cls.name,
+                "description": cls.description,
+                "parameters": cls.parameters,
                 "strict": True,
             },
         }
 
     @abc.abstractmethod
-    def run(self, **kw):
-        """`run(**kwargs)->Any` that *runs* the tool"""
+    def run(self):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def fmt(self, **kw):
-        """`fmt(**kwargs)->str` that formats the tool about to be called."""
+    def fmt(self):
         raise NotImplementedError()
 
-    def __call__(self, **kw):
-        return self.run(**kw)
+    def __call__(self):
+        return self.run()
+
+    def __str__(self):
+        return self.fmt()
 
 
-_GLOBAL_REGISTRY: dict[str, Tool] = {}
+_GLOBAL_REGISTRY: dict[str, type[Tool]] = {}
 
 
 @beartype.beartype
-def get_tools() -> list[Tool]:
+def get_tools() -> list[type[Tool]]:
     return list(_GLOBAL_REGISTRY.values())
 
 
@@ -62,7 +64,7 @@ def get_tool_specs() -> list[dict[str, object]]:
 
 
 @beartype.beartype
-def get_tool(name: str) -> Tool:
+def get_tool(name: str) -> type[Tool]:
     if name not in _GLOBAL_REGISTRY:
         raise ValueError(f"Tool {name} not registered.")
     return _GLOBAL_REGISTRY[name]
@@ -88,19 +90,27 @@ class Grep(Tool):
         "additionalProperties": False,
     }
 
-    def run(self, *, regex: str, path: str) -> str:
-        base = pathlib.Path(path).expanduser().resolve()
-        if not base.is_dir():
-            raise NotADirectoryError(base)
+    def __init__(self, *, regex: str, path: str):
+        self.regex = regex
+        self.path = pathlib.Path(path).expanduser().resolve()
 
-        cmd = ["rg", "-n", "--color", "never", "-e", regex, str(base)]
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+        self._cmd = [
+            "rg",
+            "--line-number",
+            "--color",
+            "never",
+            self.regex,
+            str(self.path),
+        ]
+
+    def run(self) -> str:
+        proc = subprocess.run(self._cmd, text=True, capture_output=True, timeout=15)
         if proc.returncode not in (0, 1):  # 1 = no matches
             raise RuntimeError(proc.stderr.strip())
         return proc.stdout
 
-    def fmt(self, *, regex: str, path: str) -> str:
-        return f"rg {regex} {path}"
+    def fmt(self) -> str:
+        return " ".join(self._cmd)
 
 
 @beartype.beartype
@@ -124,46 +134,25 @@ class Find(Tool):
     }
     read_only = True
 
-    def run(self, *, regex: str | None = None, path: str | None = None) -> str:
-        base = pathlib.Path(path or ".").expanduser().resolve()
-        if not base.is_dir():
-            raise NotADirectoryError(base)
+    def __init__(self, *, regex: str | None = None, path: str | None = None):
+        self._regex = regex
+        self._path = pathlib.Path(path or ".").expanduser().resolve()
 
-        cmd = ["fd", "--hidden", "--no-ignore", "--color", "never"]
+        if not self._path.is_dir():
+            raise NotADirectoryError(self._path)
+
+        cmd = ["fd", "--hidden", "--no-ignore", "--color", "never", "--full-path"]
         if regex:
             cmd.append(regex)
-        cmd.append(str(base))
+        cmd.append(str(self._path))
 
-        print(" ".join(cmd))
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+        self._cmd = cmd
+
+    def run(self) -> str:
+        proc = subprocess.run(self._cmd, text=True, capture_output=True, timeout=15)
         if proc.returncode not in (0, 1):  # 1 = no matches
             raise RuntimeError(proc.stderr.strip())
         return proc.stdout
 
-    def fmt(self, regex: str, path: str) -> str:
-        return f"fd --hidden --no-ignore {regex} {path}"
-
-
-# def _run_shell(*, cmd: str) -> str:
-#     proc = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=60)
-#     out = f"$ {cmd}\n{proc.stdout}"
-#     if proc.stderr:
-#         out += f"\n[stderr]\n{proc.stderr}"
-#     out += f"\n[exit {proc.returncode}]"
-#     return out
-
-
-# shell_tool = Tool(
-#     name="shell",
-#     description="Execute an arbitrary shell command in the current working directory.",
-#     parameters={
-#         "type": "object",
-#         "properties": {
-#             "cmd": {"type": "string", "description": "Exact command line to run"},
-#         },
-#         "required": ["cmd"],
-#         "additionalProperties": False,
-#     },
-#     function=_run_shell,
-#     read_only=False,
-# )
+    def fmt(self) -> str:
+        return " ".join(self._cmd)

@@ -8,7 +8,7 @@ import beartype
 import litellm
 import tyro
 
-from . import config, templating, tmux, tooling, ui
+from . import config, llms, templating, tmux, tooling, ui
 
 
 @beartype.beartype
@@ -76,37 +76,18 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         aliases=ctx.aliases,
     )
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": query},
-    ]
-
-    usd_per_tok = litellm.model_cost[cfg.model]["input_cost_per_token"]
-
-    @beartype.beartype
-    def get_costs() -> tuple[int, float]:
-        """ """
-        toks_per_msg = [
-            litellm.token_counter(model=cfg.model, messages=[m]) for m in messages
-        ]
-        usd_per_msg = [usd_per_tok * toks for toks in toks_per_msg]
-        usd_total = sum(usd_per_msg)
-        toks_total = sum(toks_per_msg)
-        return toks_total, usd_total
+    conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
+    conversation.system(system)
+    conversation.user(query)
 
     while True:
-        toks, usd = get_costs()
+        toks, usd = conversation.get_costs()
         if not ui.confirm_next_request(toks, usd):
             return 0
 
-        llm_resp = litellm.completion(
-            model=cfg.model,
-            messages=messages,
+        msg = conversation.send(
             tools=tooling.get_tool_specs(),
-            api_key=cfg.api_key,
         )
-
-        msg = llm_resp.choices[0].message
 
         # Print agent response.
         ui.echo(msg.content.strip())
@@ -115,46 +96,25 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
             # Print total session cost.
             return 0
 
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": msg.tool_calls,
-        })
-
         deny_notes = []
         for tc in msg.tool_calls:
-            tool = tooling.get_tool(tc.function.name)
-
             try:
                 kwargs = json.loads(tc.function.arguments)
-                if ui.confirm(
-                    f"Run tool {tc.function.name}: <cmd>{tool.fmt(**kwargs)}</cmd>?"
-                ):
-                    result = tool(**kwargs)
+                tool = tooling.get_tool(tc.function.name)(**kwargs)
+                if ui.confirm(f"Run tool {tc.function.name}: <cmd>{tool}</cmd>?"):
+                    result = tool()
                     ui.echo(result)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result,
-                    })
+                    conversation.tool(result, tool_call_id=tc.id)
                 else:
                     note = ui.ask_tool_skip_reason(tc.function.name)
                     deny_notes.append(f"{tc.function.name}: {note}")
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": f"denied by user: {note}",
-                    })
+                    conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
             except Exception as err:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": str(err),
-                })
+                conversation.tool(str(err), tool_call_id=tc.id)
                 ui.echo(f"<warn>Error:</warn> {err}")
 
         if deny_notes:
-            messages.append({"role": "user", "content": "\n".join(deny_notes)})
+            conversation.user("\n".join(deny_notes))
 
 
 def main():

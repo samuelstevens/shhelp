@@ -58,12 +58,24 @@ You can ask it how to do something in your shell, or for explanations of specifi
 
 ## Example Usage
 
+### Problem solving
+
 ```sh
 shgod where is my OPENROUTER_API_KEY being set?
 ```
 
+### Explanation
+
 ```sh
 shgod "can you explain what -a and -F are in tmux list-panes?"
+```
+
+```sh
+shgod whats the difference between os.environ.get and os.getenv in python
+````
+
+```sh
+shgod where do typical unix programs store REPL history on unix?
 ```
 
 >>>> __init__.py
@@ -82,16 +94,10 @@ import pathlib
 import sys
 
 import beartype
+import litellm
 import tyro
-from rich import print
 
-from . import config, templating, tmux, tooling
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Query:
-    msg: str
+from . import config, llms, templating, tmux, tooling, ui
 
 
 @beartype.beartype
@@ -108,7 +114,7 @@ class Context:
 
         active, panes = tmux.get_panes()
         system = subprocess.check_output(["uname", "-a"], text=True).strip()
-        shell = shell or os.environ.get("SHELL", "")
+        shell = shell or os.getenv("SHELL", "")
 
         # Get shell aliases
         aliases = ()
@@ -142,8 +148,6 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     cfg = config.load(cfg)
 
-    import litellm
-
     if not litellm.supports_function_calling(cfg.model):
         print(f"Error: The model '{cfg.model}' does not support function calling.")
         print("Please choose a different model that supports this feature.")
@@ -151,63 +155,55 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
 
     query = " ".join(words)
     ctx = Context()
-
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
 
     system = template.render(
         active_pane=ctx.active,
-        panes=ctx.panes,
+        # panes=ctx.panes,
         system=ctx.system,
         shell=ctx.shell,
         aliases=ctx.aliases,
     )
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": query},
-    ]
+    conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
+    conversation.system(system)
+    conversation.user(query)
 
     while True:
-        resp = litellm.completion(
-            model=cfg.model,
-            messages=messages,
-            tools=tooling.get_tool_specs(),
-            api_key=cfg.api_key,
-        )
-
-        msg = resp.choices[0].message
-        tcs = msg.tool_calls or []
-
-        if not tcs:
-            print(msg.content.strip())
+        toks, usd = conversation.get_costs()
+        if not ui.confirm_next_request(toks, usd):
             return 0
 
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": msg.tool_calls,
-        })
+        msg = conversation.send(
+            tools=tooling.get_tool_specs(),
+        )
 
-        for tc in tcs:
-            tool = tooling.get_tool(tc.function.name)
-            if not tool.read_only:
-                breakpoint()
+        # Print agent response.
+        ui.echo(msg.content.strip())
+
+        if not msg.tool_calls:
+            # Print total session cost.
+            return 0
+
+        deny_notes = []
+        for tc in msg.tool_calls:
             try:
                 kwargs = json.loads(tc.function.arguments)
-                print(f"Calling tool: [bold blue]{tc.function.name}[/bold blue]")
-                print(f"Arguments: {json.dumps(kwargs, indent=2)}")
-                result = tool(**kwargs)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
+                tool = tooling.get_tool(tc.function.name)(**kwargs)
+                if ui.confirm(f"Run tool {tc.function.name}: <cmd>{tool}</cmd>?"):
+                    result = tool()
+                    ui.echo(result)
+                    conversation.tool(result, tool_call_id=tc.id)
+                else:
+                    note = ui.ask_tool_skip_reason(tc.function.name)
+                    deny_notes.append(f"{tc.function.name}: {note}")
+                    conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
             except Exception as err:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": str(err),
-                })
+                conversation.tool(str(err), tool_call_id=tc.id)
+                ui.echo(f"<warn>Error:</warn> {err}")
+
+        if deny_notes:
+            conversation.user("\n".join(deny_notes))
 
 
 def main():
@@ -276,6 +272,87 @@ def load(cli: Config) -> Config:
 
     return cfg
 
+>>>> llms.py
+import datetime
+import os
+import pathlib
+
+import beartype
+import litellm
+
+_LOG_BASE = pathlib.Path(
+    os.getenv("SHGOD_LOGDIR", "~/.local/state/shgod/logs")
+).expanduser()
+
+Message = dict[str, object]
+Tool = dict[str, object]
+
+
+@beartype.beartype
+class SessionLogger:
+    def __init__(self):
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.dir = _LOG_BASE / ts
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._idx = 1
+
+    def log(self, msg: Message) -> None:
+        fname = f"{self._idx:02d}.{msg['role']}"
+        # content can be None for tool-only assistant msgs
+        self.dir.joinpath(fname).write_text(msg["content"] or "")
+        self._idx += 1
+
+
+@beartype.beartype
+class Conversation:
+    _model: str
+    _api_key: str
+    _msgs: list[Message]
+    _logger: SessionLogger
+
+    def __init__(self, *, model: str, api_key: str):
+        self._model = model
+        self._api_key = api_key
+        self._msgs = []
+        self._logger = SessionLogger()
+
+    # Public API
+    def system(self, content: str):
+        self._push({"role": "system", "content": content})
+
+    def user(self, content: str):
+        self._push({"role": "user", "content": content})
+
+    def tool(self, content: str, *, tool_call_id: str):
+        self._push({"role": "tool", "content": content, "tool_call_id": tool_call_id})
+
+    def send(self, *, tools: list[Tool] | None = None):
+        resp = litellm.completion(
+            model=self._model, messages=self._msgs, tools=tools, api_key=self._api_key
+        )
+        msg = resp.choices[0].message
+        self._push({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": msg.tool_calls,
+        })
+        return msg
+
+    def get_costs(self) -> tuple[int, float]:
+        usd_per_tok = litellm.model_cost[self._model]["input_cost_per_token"]
+        toks_per_msg = [
+            litellm.token_counter(model=self._model, messages=[m]) for m in self._msgs
+        ]
+        usd_per_msg = [usd_per_tok * toks for toks in toks_per_msg]
+        usd_total = sum(usd_per_msg)
+        toks_total = sum(toks_per_msg)
+        return toks_total, usd_total
+
+    # Private API
+    def _push(self, msg: Message):
+        self._msgs.append(msg)
+        self._logger.log(msg)
+
 >>>> prompt.j2
 You are **shgod**, a terse yet precise terminal guru.  
 Think, plan and act autonomously until the task is solved, then yield a final answer for the user.
@@ -315,22 +392,19 @@ If you can't solve, ask a clarifying question; never invent data.
 
 ## Active Pane
 
-id: {{ active_pane.id }}
+* cwd: {{ active_pane.cwd }}
 
 ```
-{{ '\n'.join(active_pane.history) }}
+{{ active_pane.history }}
 
-## Other Panes
-
-{% for pane in panes %}
-
-### Pane {{ pane.id }}
-
-```
-{{ '\n'.join(pane.history) }}
-```
-
-{% endfor %}
+{# ## Other Panes #}
+{# {% for pane in panes %} #}
+{# ### Pane {{ pane.id }} #}
+{# * cwd: {{ pane.cwd }} #}
+{# ``` #}
+{# {{ pane.history }} #}
+{# ``` #}
+{# {% endfor %} #}
 
 >>>> templating.py
 """
@@ -504,12 +578,33 @@ class Parser:
         return For(var, seq, body)
 
 >>>> test_e2e.py
+from pathlib import Path
+
+
+def _write_script(tmp_path: Path) -> Path:
+    script = tmp_path / "shgod"
+    script.write_text("from shgod.cli import main\nif __name__ == '__main__': main()")
+    script.chmod(0o755)
+    return script
+
+
 def test_help(script_runner, tmp_path):
     """
-    Spawn the real `shgod` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
+    Check that help works.
     """
+    script = _write_script(tmp_path)
     script_runner.run(
-        ["shgod", "-h"], env={"SHGOD_API_KEY": "DEADBEEF"}, cwd=tmp_path, check=True
+        [str(script), "-h"],
+        env={"SHGOD_API_KEY": "DEADBEEF"},
+        cwd=tmp_path,
+        check=True,
+    )
+
+    script_runner.run(
+        [str(script), "--help"],
+        env={"SHGOD_API_KEY": "DEADBEEF"},
+        cwd=tmp_path,
+        check=True,
     )
 
 
@@ -517,8 +612,14 @@ def test_non_function_calling_model_fails(script_runner, tmp_path):
     """
     Spawn the real `shgod` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
     """
+    script = _write_script(tmp_path)
     result = script_runner.run(
-        ["shgod", "how do I do nothing?", "--cfg.model", "ollama/llama2"],
+        [
+            str(script),
+            "how do I do nothing?",
+            "--cfg.model",
+            "ollama/llama2",
+        ],
         env={"SHGOD_API_KEY": "DEADBEEF"},
         cwd=tmp_path,
     )
@@ -642,6 +743,7 @@ def test_all_tool_schemas():
 
 >>>> tmux.py
 import dataclasses
+import os
 import subprocess
 
 import beartype
@@ -668,18 +770,19 @@ class Pane:
     history: str
 
 
-def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
-    active, panes = None, []
-    fmt = "#{pane_id},#{pane_active},#{pane_current_path}"
+@beartype.beartype
+def get_panes() -> tuple[Pane, list[Pane]]:
+    active_pane, other_panes = None, []
+    active_id = os.getenv("TMUX_PANE")
+    fmt = "#{pane_id},#{pane_current_path}"
     cmd = [
         "tmux",
         "list-panes",
-        "-a",  # all sessions
         "-F",  # custom format
         fmt,
     ]
     for line in subprocess.check_output(cmd, text=True).splitlines():
-        pane_id, active, cwd = line.split(",", 2)
+        pane_id, cwd = line.split(",", 2)
 
         hist_cmd = [
             "tmux",
@@ -693,17 +796,16 @@ def get_panes() -> tuple[Pane, tuple[Pane, ...]]:
         ]
         history = subprocess.check_output(hist_cmd, text=True).strip()
 
-        pane = Pane(id=pane_id, cwd=cwd, active=active == "1", history=history)
+        pane = Pane(id=pane_id, cwd=cwd, active=pane_id == active_id, history=history)
         if pane.active:
-            active = pane
+            active_pane = pane
         else:
-            panes.append(pane)
+            other_panes.append(pane)
 
-    return active, tuple(panes)
+    return active_pane, other_panes
 
 >>>> tooling.py
-import collections.abc
-import dataclasses
+import abc
 import pathlib
 import subprocess
 
@@ -712,53 +814,55 @@ import jsonschema
 
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True, slots=True)
-class Tool:
-    """Describe one JSON-function tool plus its Python executor.
-
-    Parameters
-    ----------
-    name          : snake-case identifier shown to the model
-    description   : human text
-    parameters    : valid JSON-schema describing arguments
-    function      : `func(**kwargs)->Any` that *runs* the tool
-    read_only     : if False ask user confirmation before running
-    """
+class Tool(abc.ABC):
+    """Describes a JSON-function tool plus its Python function."""
 
     name: str
+    """snake-case identifier shown to the model"""
     description: str
+    """natural langauage description of the tool."""
     parameters: dict[str, object]
-    function: collections.abc.Callable[..., object] = dataclasses.field(
-        repr=False, hash=False, compare=False
-    )
-    read_only: bool = False
+    """valid JSON-schema describing arguments"""
+    read_only: bool
+    """Whether the function makes any changes to disk."""
 
-    def __post_init__(self):
-        jsonschema.Draft202012Validator.check_schema(dict(self.parameters))
-        if self.name not in _GLOBAL_TOOLS:
-            _GLOBAL_TOOLS[self.name] = self
+    def __init_subclass__(cls):
+        jsonschema.Draft202012Validator.check_schema(cls.parameters)
+        _GLOBAL_REGISTRY[cls.name] = cls
 
-    def spec(self) -> dict[str, object]:
+    @classmethod
+    def spec(cls):
         return {
             "type": "function",
             "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
+                "name": cls.name,
+                "description": cls.description,
+                "parameters": cls.parameters,
                 "strict": True,
             },
         }
 
-    def __call__(self, **kwargs) -> object:
-        return self.function(**kwargs)
+    @abc.abstractmethod
+    def run(self):
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def fmt(self):
+        raise NotImplementedError()
+
+    def __call__(self):
+        return self.run()
+
+    def __str__(self):
+        return self.fmt()
 
 
-_GLOBAL_TOOLS: dict[str, Tool] = {}
+_GLOBAL_REGISTRY: dict[str, type[Tool]] = {}
 
 
 @beartype.beartype
-def get_tools() -> list[Tool]:
-    return list(_GLOBAL_TOOLS.values())
+def get_tools() -> list[type[Tool]]:
+    return list(_GLOBAL_REGISTRY.values())
 
 
 @beartype.beartype
@@ -767,104 +871,174 @@ def get_tool_specs() -> list[dict[str, object]]:
 
 
 @beartype.beartype
-def get_tool(name: str) -> Tool:
-    if name not in _GLOBAL_TOOLS:
+def get_tool(name: str) -> type[Tool]:
+    if name not in _GLOBAL_REGISTRY:
         raise ValueError(f"Tool {name} not registered.")
-    return _GLOBAL_TOOLS[name]
+    return _GLOBAL_REGISTRY[name]
 
 
-def _run_ripgrep(pattern: str, path: str) -> str:
-    base = pathlib.Path(path).expanduser().resolve()
-    if not base.is_dir():
-        raise NotADirectoryError(base)
-
-    cmd = ["rg", "-n", "--color", "never", "-e", pattern, str(base)]
-    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
-    if proc.returncode not in (0, 1):  # 1 = no matches
-        raise RuntimeError(proc.stderr.strip())
-    return proc.stdout
-
-
-ripgrep = Tool(
-    name="ripgrep",
-    description="Recursively look (grep) for PATTERN in a path PATH. Output path:line:match.",
-    read_only=True,
-    parameters={
+@beartype.beartype
+class Grep(Tool):
+    name = "ripgrep"
+    description = (
+        "Recursively look (grep) for REGEX in a path PATH. Output path:line:match."
+    )
+    read_only = True
+    parameters = {
         "type": "object",
         "properties": {
-            "pattern": {
+            "regex": {
                 "type": "string",
                 "description": "Regex/text to search for",
             },
             "path": {"type": "string", "description": "Directory path (can be .)"},
         },
-        "required": ["pattern", "path"],
+        "required": ["regex", "path"],
         "additionalProperties": False,
-    },
-    function=_run_ripgrep,
-)
+    }
+
+    def __init__(self, *, regex: str, path: str):
+        self.regex = regex
+        self.path = pathlib.Path(path).expanduser().resolve()
+
+        self._cmd = [
+            "rg",
+            "--line-number",
+            "--color",
+            "never",
+            self.regex,
+            str(self.path),
+        ]
+
+    def run(self) -> str:
+        proc = subprocess.run(self._cmd, text=True, capture_output=True, timeout=15)
+        if proc.returncode not in (0, 1):  # 1 = no matches
+            raise RuntimeError(proc.stderr.strip())
+        return proc.stdout
+
+    def fmt(self) -> str:
+        return " ".join(self._cmd)
 
 
-def _run_find(*, regex: str | None = None, dir: str | None = None) -> str:
-    base = pathlib.Path(dir or ".").expanduser().resolve()
-    if not base.is_dir():
-        raise NotADirectoryError(base)
-
-    cmd = ["fd", "--color", "never"]
-    if regex:
-        cmd.append(regex)
-    cmd.append(str(base))
-
-    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
-    if proc.returncode not in (0, 1):  # 1 = no matches
-        raise RuntimeError(proc.stderr.strip())
-    return proc.stdout
-
-
-Tool(
-    name="find",
-    description="Find filepaths with a regular expression. Omit regex to list everything; omit dir for CWD.",
-    parameters={
+@beartype.beartype
+class Find(Tool):
+    name = "find"
+    description = "Find filepaths with a regular expression. Omit regex to list everything; omit path for CWD."
+    parameters = {
         "type": "object",
         "properties": {
             "regex": {
                 "type": ["string", "null"],
                 "description": "Regex to match filenames; null or missing -> no filter",
             },
-            "dir": {
+            "path": {
                 "type": ["string", "null"],
                 "description": "Directory to search; null or missing -> current dir",
             },
         },
-        "required": ["regex", "dir"],
+        "required": ["regex", "path"],
         "additionalProperties": False,
-    },
-    function=_run_find,
-    read_only=True,
+    }
+    read_only = True
+
+    def __init__(self, *, regex: str | None = None, path: str | None = None):
+        self._regex = regex
+        self._path = pathlib.Path(path or ".").expanduser().resolve()
+
+        if not self._path.is_dir():
+            raise NotADirectoryError(self._path)
+
+        cmd = ["fd", "--hidden", "--no-ignore", "--color", "never", "--full-path"]
+        if regex:
+            cmd.append(regex)
+        cmd.append(str(self._path))
+
+        self._cmd = cmd
+
+    def run(self) -> str:
+        proc = subprocess.run(self._cmd, text=True, capture_output=True, timeout=15)
+        if proc.returncode not in (0, 1):  # 1 = no matches
+            raise RuntimeError(proc.stderr.strip())
+        return proc.stdout
+
+    def fmt(self) -> str:
+        return " ".join(self._cmd)
+
+>>>> ui.py
+import beartype
+import prompt_toolkit as ptk
+
+from . import unix
+
+_STYLE = ptk.styles.Style.from_dict({
+    "hl": "ansicyan",
+    "cost": "ansigreen",
+    "warn": "bold ansired",
+    "prompt": "bold",
+    "cmd": "italic ansiyellow",
+})
+
+_SESSION = ptk.PromptSession(
+    history=ptk.history.FileHistory(str(unix.get_history_path())),
+    style=_STYLE,
 )
 
-
-# def _run_shell(*, cmd: str) -> str:
-#     proc = subprocess.run(cmd, shell=True, text=True, capture_output=True, timeout=60)
-#     out = f"$ {cmd}\n{proc.stdout}"
-#     if proc.stderr:
-#         out += f"\n[stderr]\n{proc.stderr}"
-#     out += f"\n[exit {proc.returncode}]"
-#     return out
+###########
+# Generic #
+###########
 
 
-# shell_tool = Tool(
-#     name="shell",
-#     description="Execute an arbitrary shell command in the current working directory.",
-#     parameters={
-#         "type": "object",
-#         "properties": {
-#             "cmd": {"type": "string", "description": "Exact command line to run"},
-#         },
-#         "required": ["cmd"],
-#         "additionalProperties": False,
-#     },
-#     function=_run_shell,
-#     read_only=False,
-# )
+@beartype.beartype
+def echo(html: str) -> None:
+    """Write a line outside the input buffer (non-blocking)."""
+    ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
+
+
+@beartype.beartype
+def confirm(html: str, *, default_yes: bool = True) -> bool:
+    yes_set = {"y", "yes"}
+    if default_yes:
+        yes_set.add("")
+    try:
+        ans = _SESSION.prompt(ptk.HTML(f"<prompt>{html}</prompt> ")).strip().lower()
+    except EOFError:  # Ctrl-D
+        return False
+
+    return ans in yes_set
+
+
+# shgod-specific
+
+
+@beartype.beartype
+def confirm_next_request(tokens: int, cost_usd: float) -> bool:
+    msg = (
+        f"<highlight>Next request</highlight>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
+        "continue? [Y/n]:"
+    )
+    return confirm(msg)
+
+
+@beartype.beartype
+def ask_tool_skip_reason(tool: str) -> str:
+    """Return the user's reason for denying a tool."""
+    try:
+        ans = _SESSION.prompt(ptk.HTML("<prompt>Why? </prompt> "))
+    except EOFError:
+        return ""
+    return ans.strip()
+
+>>>> unix.py
+import os
+import pathlib
+
+import beartype
+
+
+@beartype.beartype
+def get_history_path() -> pathlib.Path:
+    base = pathlib.Path(os.getenv("XDG_STATE_HOME", "~/.local/state")).expanduser()
+    path = base / "shgod" / "history"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
