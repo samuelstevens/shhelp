@@ -206,8 +206,10 @@ class TokenStream:
 
     def match(self, *types: str) -> bool:
         # Match any of the types and consume that token.
-        # Implement. AI!
-        pass
+        if self.peek().typ in types:
+            self.advance()
+            return True
+        return False
 
 
 @beartype.beartype
