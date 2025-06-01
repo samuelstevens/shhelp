@@ -22,6 +22,7 @@ class Config:
     api_key: str = ""
     model: str = "gpt-4.1-mini"
     history_lines: int = 200  # reasonable default
+    mcp_servers: list[str] = dataclasses.field(default_factory=list)
 
 
 @beartype.beartype

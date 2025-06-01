@@ -51,8 +51,8 @@ class Conversation:
     def tool(self, content: str, *, tool_call_id: str):
         self._push({"role": "tool", "content": content, "tool_call_id": tool_call_id})
 
-    def send(self, *, tools: list[Tool] | None = None):
-        resp = litellm.completion(
+    async def send(self, *, tools: list[Tool] | None = None):
+        resp = await litellm.acompletion(
             model=self._model, messages=self._msgs, tools=tools, api_key=self._api_key
         )
         msg = resp.choices[0].message

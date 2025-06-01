@@ -32,15 +32,16 @@ def echo(html: str) -> None:
 
 
 @beartype.beartype
-def confirm(html: str, *, default_yes: bool = True) -> bool:
+async def confirm(html: str, *, default_yes: bool = True) -> bool:
     yes_set = {"y", "yes"}
     if default_yes:
         yes_set.add("")
     try:
-        ans = _SESSION.prompt(ptk.HTML(f"<prompt>{html}</prompt> ")).strip().lower()
+        ans = await _SESSION.prompt_async(ptk.HTML(f"<prompt>{html}</prompt> "))
     except EOFError:  # Ctrl-D
         return False
 
+    ans = ans.strip().lower()
     return ans in yes_set
 
 
@@ -48,19 +49,19 @@ def confirm(html: str, *, default_yes: bool = True) -> bool:
 
 
 @beartype.beartype
-def confirm_next_request(tokens: int, cost_usd: float) -> bool:
+async def confirm_next_request(tokens: int, cost_usd: float) -> bool:
     msg = (
         f"<highlight>Next request</highlight>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
         "continue? [Y/n]:"
     )
-    return confirm(msg)
+    return await confirm(msg)
 
 
 @beartype.beartype
-def ask_tool_skip_reason(tool: str) -> str:
+async def ask_tool_skip_reason(tool: str) -> str:
     """Return the user's reason for denying a tool."""
     try:
-        ans = _SESSION.prompt(ptk.HTML("<prompt>Why? </prompt> "))
+        ans = await _SESSION.prompt_async(ptk.HTML("<prompt>Why?</prompt> "))
     except EOFError:
         return ""
     return ans.strip()

@@ -44,13 +44,14 @@ If you can't solve, ask a clarifying question; never invent data.
 {{ active_pane.history }}
 ```
 
+## Other Panes
+{% for pane in panes %}
+### Pane {{ pane.id }}
+* cwd: {{ pane.cwd }}
+```
+{{ pane.history }}
+```
+{% endfor %}
+
 {% endif %}
 
-{# ## Other Panes #}
-{# {% for pane in panes %} #}
-{# ### Pane {{ pane.id }} #}
-{# * cwd: {{ pane.cwd }} #}
-{# ``` #}
-{# {{ pane.history }} #}
-{# ``` #}
-{# {% endfor %} #}

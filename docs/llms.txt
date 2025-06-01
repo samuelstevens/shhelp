@@ -87,58 +87,21 @@ if __name__ == "__main__":
     cli.main()
 
 >>>> cli.py
-import dataclasses
+import asyncio
+import contextlib
 import json
-import os
-import pathlib
 import sys
 import typing
 
 import beartype
+import mcp
 import tyro
 
-from . import config, tmux, tooling
+from . import config, llms, templating, tmux, ui
 
 
 @beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Context:
-    active: tmux.Pane
-    panes: tuple[tmux.Pane, ...]
-    system: str
-    shell: str
-    aliases: tuple[str, ...]
-
-    def __init__(self, shell: str | None = None):
-        import subprocess
-
-        active, panes = tmux.get_panes()
-        system = subprocess.check_output(["uname", "-a"], text=True).strip()
-        shell = shell or os.getenv("SHELL", "")
-
-        # Get shell aliases
-        aliases = ()
-        try:
-            # Run shell in interactive mode to get aliases
-            alias_cmd = [shell, "-ic", "alias"]
-            alias_output = subprocess.check_output(
-                alias_cmd, text=True, stderr=subprocess.DEVNULL
-            ).strip()
-            if alias_output:
-                aliases = tuple(alias_output.splitlines())
-        except (subprocess.SubprocessError, FileNotFoundError):
-            # Fallback if getting aliases fails
-            pass
-
-        object.__setattr__(self, "active", active)
-        object.__setattr__(self, "panes", panes)
-        object.__setattr__(self, "system", system)
-        object.__setattr__(self, "shell", shell)
-        object.__setattr__(self, "aliases", aliases)
-
-
-@beartype.beartype
-def cli(
+async def cli(
     words: list[str],
     /,
     cfg: typing.Annotated[config.Config, tyro.conf.arg(name="")] = config.Config(),
@@ -149,6 +112,7 @@ def cli(
 
     Args:
         words: Your query.
+        context: Whether to include any of your current shell context in your query.
     """
     cfg = config.load(cfg)
 
@@ -160,70 +124,95 @@ def cli(
         return 1
 
     query = " ".join(words)
-    # Need templating
-    from . import templating
 
-    template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
-    ctx = Context()
+    async with contextlib.AsyncExitStack() as stack:
+        stdio = await stack.enter_async_context(
+            mcp.client.stdio.stdio_client(
+                mcp.StdioServerParameters(
+                    command="/Users/samstevens/go/bin/voyager", args=[]
+                )
+            )
+        )
+        session = await stack.enter_async_context(mcp.ClientSession(*stdio))
+        await session.initialize()
 
-    system = template.render(
-        active_pane=ctx.active,
-        panes=ctx.panes,
-        system=ctx.system,
-        shell=ctx.shell,
-        aliases=ctx.aliases,
-        context=context,
-    )
+        conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
 
-    # Need llms
-    from . import llms
+        template = templating.load("prompt.j2")
+        ctx = tmux.Context()
 
-    conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
-    conversation.system(system)
-    conversation.user(query)
-
-    # Need ui.
-    from . import ui
-
-    while True:
-        toks, usd = conversation.get_costs()
-        if not ui.confirm_next_request(toks, usd):
-            return 0
-
-        msg = conversation.send(
-            tools=tooling.get_tool_specs(),
+        system = template.render(
+            active_pane=ctx.active,
+            panes=ctx.panes,
+            system=ctx.system,
+            shell=ctx.shell,
+            aliases=ctx.aliases,
+            context=context,
         )
 
-        # Print agent response.
-        ui.echo(msg.content.strip())
+        conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
+        conversation.system(system)
+        conversation.user(query)
 
-        if not msg.tool_calls:
-            # Print total session cost.
-            return 0
+        response = await session.list_tools()
+        tools = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.inputSchema,
+            }
+            for tool in response.tools
+        ]
 
-        deny_notes = []
-        for tc in msg.tool_calls:
-            try:
-                kwargs = json.loads(tc.function.arguments)
-                tool = tooling.get_tool(tc.function.name)(**kwargs)
-                if ui.confirm(f"Run tool {tc.function.name}: <cmd>{tool}</cmd>?"):
-                    result = tool()
-                    ui.echo(result)
-                    conversation.tool(result, tool_call_id=tc.id)
-                else:
-                    note = ui.ask_tool_skip_reason(tc.function.name)
-                    deny_notes.append(f"{tc.function.name}: {note}")
-                    conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
-            except Exception as err:
-                conversation.tool(str(err), tool_call_id=tc.id)
-                ui.echo(f"<warn>Error:</warn> {err}")
+        while True:
+            toks, usd = conversation.get_costs()
+            if not await ui.confirm_next_request(toks, usd):
+                break
 
-        if deny_notes:
-            conversation.user("\n".join(deny_notes))
+            msg = await conversation.send(tools=tools)
+
+            # Print agent response.
+            if msg.content is not None:
+                ui.echo(msg.content.strip())
+            if not msg.tool_calls:
+                # Print total session cost.
+                break
+
+            deny_notes = []
+            for tc in msg.tool_calls:
+                try:
+                    kwargs = json.loads(tc.function.arguments)
+                    if await ui.confirm(
+                        f"Run tool <cmd>{tc.function.name}</cmd> with args <cmd>{kwargs}</cmd>? [Y/n]:"
+                    ):
+                        result = await session.call_tool(tc.function.name, kwargs)
+                        for content in result.content:
+                            ui.echo(content.text)
+                            conversation.tool(content.text, tool_call_id=tc.id)
+                    else:
+                        note = await ui.ask_tool_skip_reason(tc.function.name)
+                        deny_notes.append(f"{tc.function.name}: {note}")
+                        conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
+                except Exception as err:
+                    conversation.tool(str(err), tool_call_id=tc.id)
+                    ui.echo(f"<warn>Error:</warn> {err}")
+
+            if deny_notes:
+                conversation.user("\n".join(deny_notes))
+
+    return 0
+
+
+@beartype.beartype
+@typing.runtime_checkable
+class McpSession(typing.Protocol):
+    async def initialize(self) -> None: ...
+    async def list_tools(self): ...  # returns .tools iterable
+    async def call_tool(self, name: str, arguments: dict[str, object]): ...
 
 
 def main():
-    sys.exit(tyro.cli(cli))
+    sys.exit(asyncio.run(tyro.cli(cli)))
 
 >>>> config.py
 import dataclasses
@@ -250,6 +239,7 @@ class Config:
     api_key: str = ""
     model: str = "gpt-4.1-mini"
     history_lines: int = 200  # reasonable default
+    mcp_servers: list[str] = dataclasses.field(default_factory=list)
 
 
 @beartype.beartype
@@ -342,8 +332,8 @@ class Conversation:
     def tool(self, content: str, *, tool_call_id: str):
         self._push({"role": "tool", "content": content, "tool_call_id": tool_call_id})
 
-    def send(self, *, tools: list[Tool] | None = None):
-        resp = litellm.completion(
+    async def send(self, *, tools: list[Tool] | None = None):
+        resp = await litellm.acompletion(
             model=self._model, messages=self._msgs, tools=tools, api_key=self._api_key
         )
         msg = resp.choices[0].message
@@ -416,281 +406,34 @@ If you can't solve, ask a clarifying question; never invent data.
 {{ active_pane.history }}
 ```
 
+## Other Panes
+{% for pane in panes %}
+### Pane {{ pane.id }}
+* cwd: {{ pane.cwd }}
+```
+{{ pane.history }}
+```
+{% endfor %}
+
 {% endif %}
 
-{# ## Other Panes #}
-{# {% for pane in panes %} #}
-{# ### Pane {{ pane.id }} #}
-{# * cwd: {{ pane.cwd }} #}
-{# ``` #}
-{# {{ pane.history }} #}
-{# ``` #}
-{# {% endfor %} #}
 
 >>>> templating.py
-"""
-Lightweight Jinja2 alternative.
-
-* *literal text*: everything not inside tags (unchanged)
-* *variable*: `{{ expr }}` (any valid Python eval in the provided context; output str(expr))
-* *for loops*: `{% for x in seq %} ... {% endfor %}` (nested allowed)
-* *comment*: `{# ... #}` (discarded)
-* *escaping*: `{{{` renders `{{`; raw block not supported
-
-# Grammar (PEG / EBNF-ish)
-
-document ::= segment* ;
-
-segment ::= escaped_open | variable | for_loop | comment | text ;
-
-escaped_open ::= "{{{"  # emits literal "{{"
-
-variable ::= "{{"  WS?  expression  WS?  "}}" ;
-
-for_loop        ::= "{%"  WS?  "for"  WS  identifier  WS  "in"
-                        WS  expression  WS?  "%}"
-                        segment*
-                        "{%"  WS?  "endfor"  WS?  "%}"         ;
-
-comment         ::= "{#"  (!"#}" .)*  "#}"                     # discarded
-
-text ::= (!"{{{" !"{{" !"{%" !"{#" .)+ ;
-
-identifier      ::= [A-Za-z_][A-Za-z_0-9]*                     ;
-
-expression      ::= (!"}}" .)+                                 # handed to Python eval
-
-WS              ::= [ \t\r\n]+                                 ;
-
-"""
-
-import collections.abc
-import dataclasses
 import pathlib
 
 import beartype
+import jinja2
+
+env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(pathlib.Path(__file__).parent),
+    autoescape=jinja2.select_autoescape(),
+)
 
 
 @beartype.beartype
-class Template:
-    """Tiny subset-of-Jinja renderer.
-
-    Parameters
-    ----------
-    path_or_str :
-        Either raw template text or a filesystem path.
-    """
-
-    def __init__(self, path_or_str: str | pathlib.Path):
-        if isinstance(path_or_str, pathlib.Path):
-            txt = path_or_str.read_text() if path_or_str.exists() else str(path_or_str)
-        else:
-            path = pathlib.Path(path_or_str)
-            txt = path.read_text() if path.exists() else path_or_str
-
-        self._ast = Parser(lex(txt)).parse()
-
-    def render(self, **kwargs) -> str:
-        return "".join(n.render(dict(kwargs)) for n in self._ast)
-
-
-# lexer
-
-
-TOK_OPEN_VAR = "{{"
-TOK_OPEN_STMT = "{%"
-TOK_OPEN_COMM = "{#"
-TOK_CLOSE_VAR = "}}"
-TOK_CLOSE_STMT = "%}"
-TOK_CLOSE_COMM = "#}"
-
-
-@dataclasses.dataclass(frozen=True)
-class Token:
-    typ: str
-    text: str
-
-
-@beartype.beartype
-def lex(src: str) -> collections.abc.Iterator[Token]:
-    i, n = 0, len(src)
-    while i < n:
-        if src.startswith("{{{", i):  # escape
-            yield Token("TEXT", "{{")
-            i += 3
-            continue
-
-        if src.startswith(TOK_OPEN_VAR, i):
-            j = src.find(TOK_CLOSE_VAR, i + 2)
-            if j == -1:
-                raise SyntaxError("unclosed {{")
-            yield Token("VAR", src[i + 2 : j])
-            i = j + 2
-        elif src.startswith(TOK_OPEN_STMT, i):
-            j = src.find(TOK_CLOSE_STMT, i + 2)
-            if j == -1:
-                raise SyntaxError("unclosed {%")
-            yield Token("STMT", src[i + 2 : j].strip())
-            i = j + 2
-        elif src.startswith(TOK_OPEN_COMM, i):
-            j = src.find(TOK_CLOSE_COMM, i + 2)
-            if j == -1:
-                raise SyntaxError("unclosed {#")
-            i = j + 2  # discard
-        else:  # literal
-            j = src.find("{", i)
-            yield Token("TEXT", src[i : j if j != -1 else n])
-            i = j if j != -1 else n
-    yield Token("EOF", "")
-
-
-@beartype.beartype
-class Node:
-    # base class
-    def render(self, ctx: dict[str, object]) -> str:
-        raise NotImplementedError
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Text(Node):
-    val: str
-
-    def render(self, ctx):
-        return self.val
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Var(Node):
-    expr: str
-
-    def render(self, ctx):
-        return str(eval(self.expr, {}, ctx))
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class If(Node):
-    cond: str
-    body: collections.abc.Sequence[Node]
-
-    def render(self, ctx: dict[str, object]) -> str:
-        if eval(self.cond, {}, ctx):
-            return self.body.render(ctx)
-        return ""
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class For(Node):
-    var: str
-    seq: str
-    body: collections.abc.Sequence[Node]
-
-    def render(self, ctx):
-        out = []
-        for item in eval(self.seq, {}, ctx):
-            ctx[self.var] = item
-            out.append("".join(n.render(ctx) for n in self.body))
-        return "".join(out)
-
-
-@beartype.beartype
-class TokenStream:
-    def __init__(self, objs: collections.abc.Iterable[Token]):
-        self.it = iter(objs)
-        self.buffer = []
-        self.position = -1
-        self.advance()  # Load the first item
-
-    def advance(self) -> Token:
-        try:
-            if self.position < len(self.buffer) - 1:
-                self.position += 1
-                return self.buffer[self.position]
-            else:
-                item = next(self.it)
-                self.buffer.append(item)
-                self.position += 1
-                return item
-        except StopIteration:
-            return Token("EOF", "")  # Assuming Token is the expected type
-
-    def peek(self) -> Token:
-        if self.position >= len(self.buffer) - 1:
-            try:
-                self.buffer.append(next(self.it))
-            except StopIteration:
-                return Token("EOF", "")  # Assuming Token is the expected type
-        return self.buffer[self.position + 1]
-
-    def prev(self) -> Token:
-        if self.position > 0:
-            self.position -= 1
-            return self.buffer[self.position]
-        raise IndexError("Cannot go back before the start of the stream")
-
-    def at_end(self) -> bool:
-        return self.position >= len(self.buffer) - 1 and self.peek().typ == "EOF"
-
-    def match(self, *types: str) -> bool:
-        # Match any of the types and consume that token.
-        if self.peek().typ in types:
-            self.advance()
-            return True
-        return False
-
-
-@beartype.beartype
-class Parser:
-    def __init__(self, tokens: collections.abc.Iterable[Token]):
-        self.tokens = TokenStream(tokens)
-
-    def match(self, *types: str) -> bool:
-        if self.tokens.peek().typ in types:
-            self.tokens.advance()
-            return True
-        return False
-
-    def parse(self) -> list[Node]:
-        nodes = []
-        while not self.tokens.at_end():
-            nodes.append(self._segment())
-        return nodes
-
-    def _segment(self) -> Node:
-        if self.tokens.match("TEXT"):
-            return self._text()
-        elif self.tokens.match("VAR"):
-            return self._var()
-        else:
-            breakpoint()
-
-    def _text(self) -> Text:
-        return Text(self.tokens.prev().text)
-
-    def _var(self) -> Var:
-        breakpoint()
-
-    def _parse_if(self):
-        _, cond = self.cur.text.split(None, 2)  # "if cond"
-        self._next()
-        body = self.parse()
-        breakpoint()
-        if self.cur.text != "endif":
-            raise SyntaxError("missing endif")
-        self._next()
-        return If(cond, body)
-
-    def _parse_for(self):
-        _, var, _, seq = self.cur.text.split(None, 3)  # "for x in seq"
-        self._next()
-        body = self.parse()
-        if self.cur.text != "endfor":
-            raise SyntaxError("missing endfor")
-        self._next()
-        return For(var, seq, body)
+def load(path: str | pathlib.Path):
+    template = env.get_template(str(path))
+    return template
 
 >>>> test_e2e.py
 from pathlib import Path
@@ -919,6 +662,43 @@ def get_panes() -> tuple[Pane, list[Pane]]:
 
     return active_pane, other_panes
 
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Context:
+    active: Pane
+    panes: tuple[Pane, ...]
+    system: str
+    shell: str
+    aliases: tuple[str, ...]
+
+    def __init__(self, shell: str | None = None):
+        import subprocess
+
+        active, panes = get_panes()
+        system = subprocess.check_output(["uname", "-a"], text=True).strip()
+        shell = shell or os.getenv("SHELL", "")
+
+        # Get shell aliases
+        aliases = ()
+        try:
+            # Run shell in interactive mode to get aliases
+            alias_cmd = [shell, "-ic", "alias"]
+            alias_output = subprocess.check_output(
+                alias_cmd, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if alias_output:
+                aliases = tuple(alias_output.splitlines())
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback if getting aliases fails
+            pass
+
+        object.__setattr__(self, "active", active)
+        object.__setattr__(self, "panes", panes)
+        object.__setattr__(self, "system", system)
+        object.__setattr__(self, "shell", shell)
+        object.__setattr__(self, "aliases", aliases)
+
 >>>> tooling.py
 import abc
 import pathlib
@@ -1115,15 +895,16 @@ def echo(html: str) -> None:
 
 
 @beartype.beartype
-def confirm(html: str, *, default_yes: bool = True) -> bool:
+async def confirm(html: str, *, default_yes: bool = True) -> bool:
     yes_set = {"y", "yes"}
     if default_yes:
         yes_set.add("")
     try:
-        ans = _SESSION.prompt(ptk.HTML(f"<prompt>{html}</prompt> ")).strip().lower()
+        ans = await _SESSION.prompt_async(ptk.HTML(f"<prompt>{html}</prompt> "))
     except EOFError:  # Ctrl-D
         return False
 
+    ans = ans.strip().lower()
     return ans in yes_set
 
 
@@ -1131,19 +912,19 @@ def confirm(html: str, *, default_yes: bool = True) -> bool:
 
 
 @beartype.beartype
-def confirm_next_request(tokens: int, cost_usd: float) -> bool:
+async def confirm_next_request(tokens: int, cost_usd: float) -> bool:
     msg = (
         f"<highlight>Next request</highlight>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
         "continue? [Y/n]:"
     )
-    return confirm(msg)
+    return await confirm(msg)
 
 
 @beartype.beartype
-def ask_tool_skip_reason(tool: str) -> str:
+async def ask_tool_skip_reason(tool: str) -> str:
     """Return the user's reason for denying a tool."""
     try:
-        ans = _SESSION.prompt(ptk.HTML("<prompt>Why? </prompt> "))
+        ans = await _SESSION.prompt_async(ptk.HTML("<prompt>Why?</prompt> "))
     except EOFError:
         return ""
     return ans.strip()

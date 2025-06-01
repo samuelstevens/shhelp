@@ -8,6 +8,7 @@ dependencies = [
     "beartype>=0.20.2",
     "jinja2>=3.1.6",
     "litellm>=1.70.0",
+    "mcp>=1.9.2",
     "prompt-toolkit>=3.0.51",
     "tyro>=0.9.20",
 ]
