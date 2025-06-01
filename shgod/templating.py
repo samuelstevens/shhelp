@@ -168,18 +168,41 @@ class For(Node):
 
 @beartype.beartype
 class Stream[T]:
-    # Implement this Stream class (only advance, peek and prev). AI!
     def __init__(self, objs: collections.abc.Iterable[T]):
         self.it = iter(objs)
+        self.buffer = []
+        self.position = -1
+        self.advance()  # Load the first item
 
     def advance(self) -> T:
-        pass
+        try:
+            if self.position < len(self.buffer) - 1:
+                self.position += 1
+                return self.buffer[self.position]
+            else:
+                item = next(self.it)
+                self.buffer.append(item)
+                self.position += 1
+                return item
+        except StopIteration:
+            return Token("EOF", "")  # Assuming Token is the expected type
 
     def peek(self) -> T:
-        pass
+        if self.position >= len(self.buffer) - 1:
+            try:
+                self.buffer.append(next(self.it))
+            except StopIteration:
+                return Token("EOF", "")  # Assuming Token is the expected type
+        return self.buffer[self.position + 1]
 
     def prev(self) -> T:
-        pass
+        if self.position > 0:
+            self.position -= 1
+            return self.buffer[self.position]
+        raise IndexError("Cannot go back before the start of the stream")
+        
+    def at_end(self) -> bool:
+        return self.position >= len(self.buffer) - 1 and self.peek().typ == "EOF"
 
 
 @beartype.beartype
@@ -191,7 +214,10 @@ class Parser:
         return self.tokens.at_end()
 
     def match(self, *types: str) -> bool:
-        pass
+        if self.tokens.peek().typ in types:
+            self.tokens.advance()
+            return True
+        return False
 
     def _next(self):
         self.cur = next(self._toks)
