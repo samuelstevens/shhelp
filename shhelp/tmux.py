@@ -59,3 +59,40 @@ def get_panes() -> tuple[Pane, list[Pane]]:
             other_panes.append(pane)
 
     return active_pane, other_panes
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
+class Context:
+    active: Pane
+    panes: tuple[Pane, ...]
+    system: str
+    shell: str
+    aliases: tuple[str, ...]
+
+    def __init__(self, shell: str | None = None):
+        import subprocess
+
+        active, panes = get_panes()
+        system = subprocess.check_output(["uname", "-a"], text=True).strip()
+        shell = shell or os.getenv("SHELL", "")
+
+        # Get shell aliases
+        aliases = ()
+        try:
+            # Run shell in interactive mode to get aliases
+            alias_cmd = [shell, "-ic", "alias"]
+            alias_output = subprocess.check_output(
+                alias_cmd, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if alias_output:
+                aliases = tuple(alias_output.splitlines())
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback if getting aliases fails
+            pass
+
+        object.__setattr__(self, "active", active)
+        object.__setattr__(self, "panes", panes)
+        object.__setattr__(self, "system", system)
+        object.__setattr__(self, "shell", shell)
+        object.__setattr__(self, "aliases", aliases)

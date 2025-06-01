@@ -1,51 +1,10 @@
-import dataclasses
-import json
-import os
-import pathlib
 import sys
 import typing
 
 import beartype
 import tyro
 
-from . import config, tmux, tooling
-
-
-@beartype.beartype
-@dataclasses.dataclass(frozen=True)
-class Context:
-    active: tmux.Pane
-    panes: tuple[tmux.Pane, ...]
-    system: str
-    shell: str
-    aliases: tuple[str, ...]
-
-    def __init__(self, shell: str | None = None):
-        import subprocess
-
-        active, panes = tmux.get_panes()
-        system = subprocess.check_output(["uname", "-a"], text=True).strip()
-        shell = shell or os.getenv("SHELL", "")
-
-        # Get shell aliases
-        aliases = ()
-        try:
-            # Run shell in interactive mode to get aliases
-            alias_cmd = [shell, "-ic", "alias"]
-            alias_output = subprocess.check_output(
-                alias_cmd, text=True, stderr=subprocess.DEVNULL
-            ).strip()
-            if alias_output:
-                aliases = tuple(alias_output.splitlines())
-        except (subprocess.SubprocessError, FileNotFoundError):
-            # Fallback if getting aliases fails
-            pass
-
-        object.__setattr__(self, "active", active)
-        object.__setattr__(self, "panes", panes)
-        object.__setattr__(self, "system", system)
-        object.__setattr__(self, "shell", shell)
-        object.__setattr__(self, "aliases", aliases)
+from . import config
 
 
 @beartype.beartype
@@ -72,10 +31,10 @@ def cli(
 
     query = " ".join(words)
     # Need templating
-    from . import templating
+    from . import templating, tmux
 
-    template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
-    ctx = Context()
+    template = templating.load("prompt.j2")
+    ctx = tmux.Context()
 
     system = template.render(
         active_pane=ctx.active,
@@ -101,36 +60,13 @@ def cli(
         if not ui.confirm_next_request(toks, usd):
             return 0
 
-        msg = conversation.send(
-            tools=tooling.get_tool_specs(),
-        )
+        msg = conversation.send(tools=[])
 
         # Print agent response.
         ui.echo(msg.content.strip())
 
         if not msg.tool_calls:
-            # Print total session cost.
             return 0
-
-        deny_notes = []
-        for tc in msg.tool_calls:
-            try:
-                kwargs = json.loads(tc.function.arguments)
-                tool = tooling.get_tool(tc.function.name)(**kwargs)
-                if ui.confirm(f"Run tool {tc.function.name}: <cmd>{tool}</cmd>?"):
-                    result = tool()
-                    ui.echo(result)
-                    conversation.tool(result, tool_call_id=tc.id)
-                else:
-                    note = ui.ask_tool_skip_reason(tc.function.name)
-                    deny_notes.append(f"{tc.function.name}: {note}")
-                    conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
-            except Exception as err:
-                conversation.tool(str(err), tool_call_id=tc.id)
-                ui.echo(f"<warn>Error:</warn> {err}")
-
-        if deny_notes:
-            conversation.user("\n".join(deny_notes))
 
 
 def main():
