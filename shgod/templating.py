@@ -6,6 +6,32 @@ Lightweight Jinja2 alternative.
 * *for loops*: `{% for x in seq %} ... {% endfor %}` (nested allowed)
 * *comment*: `{# ... #}` (discarded)
 * *escaping*: `{{{` renders `{{`; raw block not supported
+
+# Grammar (PEG / EBNF-ish)
+
+document ::= segment* ;
+
+segment ::= escaped_open | variable | for_loop | comment | text ;
+
+escaped_open ::= "{{{"  # emits literal "{{"
+
+variable ::= "{{"  WS?  expression  WS?  "}}" ;
+
+for_loop        ::= "{%"  WS?  "for"  WS  identifier  WS  "in"
+                        WS  expression  WS?  "%}"
+                        segment*
+                        "{%"  WS?  "endfor"  WS?  "%}"         ;
+
+comment         ::= "{#"  (!"#}" .)*  "#}"                     # discarded
+
+text ::= (!"{{{" !"{{" !"{%" !"{#" .)+ ;
+
+identifier      ::= [A-Za-z_][A-Za-z_0-9]*                     ;
+
+expression      ::= (!"}}" .)+                                 # handed to Python eval
+
+WS              ::= [ \t\r\n]+                                 ;
+
 """
 
 import collections.abc
@@ -115,6 +141,18 @@ class Var(Node):
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
+class If(Node):
+    cond: str
+    body: collections.abc.Sequence[Node]
+
+    def render(self, ctx: dict[str, object]) -> str:
+        if eval(self.cond, {}, ctx):
+            return self.body.render(ctx)
+        return ""
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
 class For(Node):
     var: str
     seq: str
@@ -129,10 +167,31 @@ class For(Node):
 
 
 @beartype.beartype
+class Stream[T]:
+    # Implement this Stream class (only advance, peek and prev). AI!
+    def __init__(self, objs: collections.abc.Iterable[T]):
+        self.it = iter(objs)
+
+    def advance(self) -> T:
+        pass
+
+    def peek(self) -> T:
+        pass
+
+    def prev(self) -> T:
+        pass
+
+
+@beartype.beartype
 class Parser:
     def __init__(self, tokens: collections.abc.Iterable[Token]):
-        self._toks = iter(tokens)
-        self._next()
+        self.tokens = Stream(tokens)
+
+    def at_end(self) -> bool:
+        return self.tokens.at_end()
+
+    def match(self, *types: str) -> bool:
+        pass
 
     def _next(self):
         self.cur = next(self._toks)
@@ -140,25 +199,26 @@ class Parser:
     def parse(self) -> list[Node]:
         nodes = []
         while self.cur.typ != "EOF":
-            if self.cur.typ == "TEXT":
-                nodes.append(Text(self.cur.text))
-                self._next()
-            elif self.cur.typ == "VAR":
-                nodes.append(Var(self.cur.text.strip()))
-                self._next()
-            elif self.cur.typ == "STMT":
-                cmd = self.cur.text
-                if cmd.startswith("for "):
-                    nodes.append(self._parse_for())
-                elif cmd == "endfor":
-                    break
-                else:
-                    raise SyntaxError(f"unknown stmt {cmd!r}")
-            else:
-                raise SyntaxError(f"unexpected token {self.cur}")
+            nodes.append(self._segment())
         return nodes
 
-    # --- helpers ---
+    def _segment(self) -> Node:
+        if self.cur.typ == "TEXT":
+            self._next()
+            return Text(self.cur.text)
+        else:
+            breakpoint()
+
+    def _parse_if(self):
+        _, cond = self.cur.text.split(None, 2)  # "if cond"
+        self._next()
+        body = self.parse()
+        breakpoint()
+        if self.cur.text != "endif":
+            raise SyntaxError("missing endif")
+        self._next()
+        return If(cond, body)
+
     def _parse_for(self):
         _, var, _, seq = self.cur.text.split(None, 3)  # "for x in seq"
         self._next()
