@@ -167,14 +167,14 @@ class For(Node):
 
 
 @beartype.beartype
-class Stream[T]:
-    def __init__(self, objs: collections.abc.Iterable[T]):
+class TokenStream:
+    def __init__(self, objs: collections.abc.Iterable[Token]):
         self.it = iter(objs)
         self.buffer = []
         self.position = -1
         self.advance()  # Load the first item
 
-    def advance(self) -> T:
+    def advance(self) -> Token:
         try:
             if self.position < len(self.buffer) - 1:
                 self.position += 1
@@ -187,7 +187,7 @@ class Stream[T]:
         except StopIteration:
             return Token("EOF", "")  # Assuming Token is the expected type
 
-    def peek(self) -> T:
+    def peek(self) -> Token:
         if self.position >= len(self.buffer) - 1:
             try:
                 self.buffer.append(next(self.it))
@@ -195,23 +195,25 @@ class Stream[T]:
                 return Token("EOF", "")  # Assuming Token is the expected type
         return self.buffer[self.position + 1]
 
-    def prev(self) -> T:
+    def prev(self) -> Token:
         if self.position > 0:
             self.position -= 1
             return self.buffer[self.position]
         raise IndexError("Cannot go back before the start of the stream")
-        
+
     def at_end(self) -> bool:
         return self.position >= len(self.buffer) - 1 and self.peek().typ == "EOF"
+
+    def match(self, *types: str) -> bool:
+        # Match any of the types and consume that token.
+        # Implement. AI!
+        pass
 
 
 @beartype.beartype
 class Parser:
     def __init__(self, tokens: collections.abc.Iterable[Token]):
-        self.tokens = Stream(tokens)
-
-    def at_end(self) -> bool:
-        return self.tokens.at_end()
+        self.tokens = TokenStream(tokens)
 
     def match(self, *types: str) -> bool:
         if self.tokens.peek().typ in types:
@@ -219,19 +221,15 @@ class Parser:
             return True
         return False
 
-    def _next(self):
-        self.cur = next(self._toks)
-
     def parse(self) -> list[Node]:
         nodes = []
-        while self.cur.typ != "EOF":
+        while not self.tokens.at_end():
             nodes.append(self._segment())
         return nodes
 
     def _segment(self) -> Node:
-        if self.cur.typ == "TEXT":
-            self._next()
-            return Text(self.cur.text)
+        if self.tokens.match("TEXT"):
+            return Text(self.tokens.prev().text)
         else:
             breakpoint()
 
