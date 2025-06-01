@@ -24,7 +24,11 @@ _SESSION = ptk.PromptSession(
 @beartype.beartype
 def echo(html: str) -> None:
     """Write a line outside the input buffer (non-blocking)."""
-    ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
+    try:
+        ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
+    except Exception as err:
+        breakpoint()
+        print(err)
 
 
 @beartype.beartype
@@ -40,7 +44,7 @@ def confirm(html: str, *, default_yes: bool = True) -> bool:
     return ans in yes_set
 
 
-# shgod-specific
+# shhelp-specific
 
 
 @beartype.beartype

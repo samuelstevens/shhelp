@@ -46,13 +46,13 @@ just test
 
 # do run
 uv run ruff format --preview .
-uv run pytest --cov shgod --cov-report term
+uv run pytest --cov shhelp --cov-report term
 ```
 
 >>>> README.md
-# shgod
+# shhelp
 
-shgod is a tool for answering shell-related questions directly from the command line.
+shhelp is a tool for answering shell-related questions directly from the command line.
 
 You can ask it how to do something in your shell, or for explanations of specific command-line options.
 
@@ -61,21 +61,21 @@ You can ask it how to do something in your shell, or for explanations of specifi
 ### Problem solving
 
 ```sh
-shgod where is my OPENROUTER_API_KEY being set?
+shh where is my OPENROUTER_API_KEY being set?
 ```
 
 ### Explanation
 
 ```sh
-shgod "can you explain what -a and -F are in tmux list-panes?"
+shh "can you explain what -a and -F are in tmux list-panes?"
 ```
 
 ```sh
-shgod whats the difference between os.environ.get and os.getenv in python
+shh whats the difference between os.environ.get and os.getenv in python
 ````
 
 ```sh
-shgod where do typical unix programs store REPL history on unix?
+shh where do typical unix programs store REPL history on unix?
 ```
 
 >>>> __init__.py
@@ -92,12 +92,12 @@ import json
 import os
 import pathlib
 import sys
+import typing
 
 import beartype
-import litellm
 import tyro
 
-from . import config, llms, templating, tmux, tooling, ui
+from . import config, tmux, tooling
 
 
 @beartype.beartype
@@ -138,15 +138,21 @@ class Context:
 
 
 @beartype.beartype
-def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
+def cli(
+    words: list[str],
+    /,
+    cfg: typing.Annotated[config.Config, tyro.conf.arg(name="")] = config.Config(),
+    context: bool = True,
+) -> int:
     """
     Ask an LLM for help with shell commands.
 
     Args:
         words: Your query.
     """
-
     cfg = config.load(cfg)
+
+    import litellm
 
     if not litellm.supports_function_calling(cfg.model):
         print(f"Error: The model '{cfg.model}' does not support function calling.")
@@ -154,20 +160,30 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         return 1
 
     query = " ".join(words)
-    ctx = Context()
+    # Need templating
+    from . import templating
+
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
+    ctx = Context()
 
     system = template.render(
         active_pane=ctx.active,
-        # panes=ctx.panes,
+        panes=ctx.panes,
         system=ctx.system,
         shell=ctx.shell,
         aliases=ctx.aliases,
+        context=context,
     )
+
+    # Need llms
+    from . import llms
 
     conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
     conversation.system(system)
     conversation.user(query)
+
+    # Need ui.
+    from . import ui
 
     while True:
         toks, usd = conversation.get_costs()
@@ -217,7 +233,7 @@ import tomllib
 
 import beartype
 
-_CFG_PATH = pathlib.Path("~/.config/shgod/config.toml").expanduser()
+_CFG_PATH = pathlib.Path("~/.config/shhelp/config.toml").expanduser()
 
 
 @beartype.beartype
@@ -226,7 +242,7 @@ class Config:
     """Runtime options that rarely change between invocations.
 
     Attributes:
-        api_key: Secret for your LLM backend (OpenAI / Anthropic / etc.). Default None -> fall back to env var `SHGOD_API_KEY` or backend-specific vars like `OPENAI_API_KEY`.
+        api_key: Secret for your LLM backend (OpenAI / Anthropic / etc.). Default None, which falls back to env var `SHHELP_API_KEY` or backend-specific vars like `OPENAI_API_KEY`.
         model: Identifier sent to the provider, e.g. ``gpt-4o-mini``.
         history_lines: How many lines of tmux scrollback to include in the prompt.
     """
@@ -238,7 +254,7 @@ class Config:
 
 @beartype.beartype
 def _write_default_cfg() -> None:
-    """Write default config to `~/.config/shgod/config.toml`."""
+    """Write default config to `~/.config/shhelp/config.toml`."""
     # TODO: include TOML comments with the parsed attribute comments from Config. We can adjust the comments to be under each variable instead of the docstring if that's easier.
     _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _CFG_PATH.open("w") as fh:
@@ -265,7 +281,7 @@ def load(cli: Config) -> Config:
         if field_value is not None and field_value != default_value:
             cfg_dict[field_name] = field_value
 
-    if env_key := os.getenv("SHGOD_API_KEY"):
+    if env_key := os.getenv("SHHELP_API_KEY"):
         cfg_dict["api_key"] = env_key
 
     cfg = Config(**cfg_dict)
@@ -281,7 +297,7 @@ import beartype
 import litellm
 
 _LOG_BASE = pathlib.Path(
-    os.getenv("SHGOD_LOGDIR", "~/.local/state/shgod/logs")
+    os.getenv("SHHELP_LOGDIR", "~/.local/state/shhelp/logs")
 ).expanduser()
 
 Message = dict[str, object]
@@ -354,7 +370,7 @@ class Conversation:
         self._logger.log(msg)
 
 >>>> prompt.j2
-You are **shgod**, a terse yet precise terminal guru.  
+You are **shhelp**, a terse yet precise terminal guru.  
 Think, plan and act autonomously until the task is solved, then yield a final answer for the user.
 
 Keep the conversation open; do **not** finish until the user’s request is fully satisfied.
@@ -390,12 +406,17 @@ If you can't solve, ask a clarifying question; never invent data.
 * aliases: {{ aliases }}
 * cwd: {{ active_pane.cwd }}
 
+{% if context %}
+
 ## Active Pane
 
 * cwd: {{ active_pane.cwd }}
 
 ```
 {{ active_pane.history }}
+```
+
+{% endif %}
 
 {# ## Other Panes #}
 {# {% for pane in panes %} #}
@@ -415,6 +436,32 @@ Lightweight Jinja2 alternative.
 * *for loops*: `{% for x in seq %} ... {% endfor %}` (nested allowed)
 * *comment*: `{# ... #}` (discarded)
 * *escaping*: `{{{` renders `{{`; raw block not supported
+
+# Grammar (PEG / EBNF-ish)
+
+document ::= segment* ;
+
+segment ::= escaped_open | variable | for_loop | comment | text ;
+
+escaped_open ::= "{{{"  # emits literal "{{"
+
+variable ::= "{{"  WS?  expression  WS?  "}}" ;
+
+for_loop        ::= "{%"  WS?  "for"  WS  identifier  WS  "in"
+                        WS  expression  WS?  "%}"
+                        segment*
+                        "{%"  WS?  "endfor"  WS?  "%}"         ;
+
+comment         ::= "{#"  (!"#}" .)*  "#}"                     # discarded
+
+text ::= (!"{{{" !"{{" !"{%" !"{#" .)+ ;
+
+identifier      ::= [A-Za-z_][A-Za-z_0-9]*                     ;
+
+expression      ::= (!"}}" .)+                                 # handed to Python eval
+
+WS              ::= [ \t\r\n]+                                 ;
+
 """
 
 import collections.abc
@@ -524,6 +571,18 @@ class Var(Node):
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
+class If(Node):
+    cond: str
+    body: collections.abc.Sequence[Node]
+
+    def render(self, ctx: dict[str, object]) -> str:
+        if eval(self.cond, {}, ctx):
+            return self.body.render(ctx)
+        return ""
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
 class For(Node):
     var: str
     seq: str
@@ -538,36 +597,92 @@ class For(Node):
 
 
 @beartype.beartype
+class TokenStream:
+    def __init__(self, objs: collections.abc.Iterable[Token]):
+        self.it = iter(objs)
+        self.buffer = []
+        self.position = -1
+        self.advance()  # Load the first item
+
+    def advance(self) -> Token:
+        try:
+            if self.position < len(self.buffer) - 1:
+                self.position += 1
+                return self.buffer[self.position]
+            else:
+                item = next(self.it)
+                self.buffer.append(item)
+                self.position += 1
+                return item
+        except StopIteration:
+            return Token("EOF", "")  # Assuming Token is the expected type
+
+    def peek(self) -> Token:
+        if self.position >= len(self.buffer) - 1:
+            try:
+                self.buffer.append(next(self.it))
+            except StopIteration:
+                return Token("EOF", "")  # Assuming Token is the expected type
+        return self.buffer[self.position + 1]
+
+    def prev(self) -> Token:
+        if self.position > 0:
+            self.position -= 1
+            return self.buffer[self.position]
+        raise IndexError("Cannot go back before the start of the stream")
+
+    def at_end(self) -> bool:
+        return self.position >= len(self.buffer) - 1 and self.peek().typ == "EOF"
+
+    def match(self, *types: str) -> bool:
+        # Match any of the types and consume that token.
+        if self.peek().typ in types:
+            self.advance()
+            return True
+        return False
+
+
+@beartype.beartype
 class Parser:
     def __init__(self, tokens: collections.abc.Iterable[Token]):
-        self._toks = iter(tokens)
-        self._next()
+        self.tokens = TokenStream(tokens)
 
-    def _next(self):
-        self.cur = next(self._toks)
+    def match(self, *types: str) -> bool:
+        if self.tokens.peek().typ in types:
+            self.tokens.advance()
+            return True
+        return False
 
     def parse(self) -> list[Node]:
         nodes = []
-        while self.cur.typ != "EOF":
-            if self.cur.typ == "TEXT":
-                nodes.append(Text(self.cur.text))
-                self._next()
-            elif self.cur.typ == "VAR":
-                nodes.append(Var(self.cur.text.strip()))
-                self._next()
-            elif self.cur.typ == "STMT":
-                cmd = self.cur.text
-                if cmd.startswith("for "):
-                    nodes.append(self._parse_for())
-                elif cmd == "endfor":
-                    break
-                else:
-                    raise SyntaxError(f"unknown stmt {cmd!r}")
-            else:
-                raise SyntaxError(f"unexpected token {self.cur}")
+        while not self.tokens.at_end():
+            nodes.append(self._segment())
         return nodes
 
-    # --- helpers ---
+    def _segment(self) -> Node:
+        if self.tokens.match("TEXT"):
+            return self._text()
+        elif self.tokens.match("VAR"):
+            return self._var()
+        else:
+            breakpoint()
+
+    def _text(self) -> Text:
+        return Text(self.tokens.prev().text)
+
+    def _var(self) -> Var:
+        breakpoint()
+
+    def _parse_if(self):
+        _, cond = self.cur.text.split(None, 2)  # "if cond"
+        self._next()
+        body = self.parse()
+        breakpoint()
+        if self.cur.text != "endif":
+            raise SyntaxError("missing endif")
+        self._next()
+        return If(cond, body)
+
     def _parse_for(self):
         _, var, _, seq = self.cur.text.split(None, 3)  # "for x in seq"
         self._next()
@@ -582,8 +697,8 @@ from pathlib import Path
 
 
 def _write_script(tmp_path: Path) -> Path:
-    script = tmp_path / "shgod"
-    script.write_text("from shgod.cli import main\nif __name__ == '__main__': main()")
+    script = tmp_path / "shh"
+    script.write_text("from shhelp.cli import main\nif __name__ == '__main__': main()")
     script.chmod(0o755)
     return script
 
@@ -595,14 +710,14 @@ def test_help(script_runner, tmp_path):
     script = _write_script(tmp_path)
     script_runner.run(
         [str(script), "-h"],
-        env={"SHGOD_API_KEY": "DEADBEEF"},
+        env={"SHHELP_API_KEY": "DEADBEEF"},
         cwd=tmp_path,
         check=True,
     )
 
     script_runner.run(
         [str(script), "--help"],
-        env={"SHGOD_API_KEY": "DEADBEEF"},
+        env={"SHHELP_API_KEY": "DEADBEEF"},
         cwd=tmp_path,
         check=True,
     )
@@ -610,7 +725,7 @@ def test_help(script_runner, tmp_path):
 
 def test_non_function_calling_model_fails(script_runner, tmp_path):
     """
-    Spawn the real `shgod` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
+    Spawn the real `shhelp` command and assert non-zero exit plus error text when a model lacking function-calling is requested.
     """
     script = _write_script(tmp_path)
     result = script_runner.run(
@@ -620,7 +735,7 @@ def test_non_function_calling_model_fails(script_runner, tmp_path):
             "--cfg.model",
             "ollama/llama2",
         ],
-        env={"SHGOD_API_KEY": "DEADBEEF"},
+        env={"SHHELP_API_KEY": "DEADBEEF"},
         cwd=tmp_path,
     )
 
@@ -810,7 +925,6 @@ import pathlib
 import subprocess
 
 import beartype
-import jsonschema
 
 
 @beartype.beartype
@@ -827,6 +941,8 @@ class Tool(abc.ABC):
     """Whether the function makes any changes to disk."""
 
     def __init_subclass__(cls):
+        import jsonschema
+
         jsonschema.Draft202012Validator.check_schema(cls.parameters)
         _GLOBAL_REGISTRY[cls.name] = cls
 
@@ -991,7 +1107,11 @@ _SESSION = ptk.PromptSession(
 @beartype.beartype
 def echo(html: str) -> None:
     """Write a line outside the input buffer (non-blocking)."""
-    ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
+    try:
+        ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
+    except Exception as err:
+        breakpoint()
+        print(err)
 
 
 @beartype.beartype
@@ -1007,7 +1127,7 @@ def confirm(html: str, *, default_yes: bool = True) -> bool:
     return ans in yes_set
 
 
-# shgod-specific
+# shhelp-specific
 
 
 @beartype.beartype
@@ -1038,7 +1158,7 @@ import beartype
 @beartype.beartype
 def get_history_path() -> pathlib.Path:
     base = pathlib.Path(os.getenv("XDG_STATE_HOME", "~/.local/state")).expanduser()
-    path = base / "shgod" / "history"
+    path = base / "shhelp" / "history"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -1,8 +1,8 @@
 docs: fmt
-    yek shgod *.py *.md > docs/llms.txt
+    yek shhelp *.py *.md > docs/llms.txt
 
 test: fmt
-    uv run pytest --cov shgod --cov-report term
+    uv run pytest --cov shhelp --cov-report term
 
 lint: fmt
     uv run ruff check --fix .

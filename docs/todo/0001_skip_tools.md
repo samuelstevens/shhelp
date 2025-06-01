@@ -1,9 +1,9 @@
 # Skipping Tool Use
 
-Here's an example of a situation where shgod thinks we should use a tool, but I don't want it to.
+Here's an example of a situation where shhelp thinks we should use a tool, but I don't want it to.
 
 ```text
-[I] samstevens@localhoster ~/D/shgod (main) [1]> shgod whats the difference between os.environ.get and os.getenv in python
+[I] samstevens@localhoster ~/D/shhelp (main) [1]> shh whats the difference between os.environ.get and os.getenv in python
 Next request: 1856 tok  $0.01
 continue? [Y/n]:
 Let me find out the difference between `os.environ.get` and `os.getenv` in Python.
@@ -15,7 +15,7 @@ Using ripgrep to search for relevant code:
 
 ripgrep "os\.environ\.get|os\.getenv" .
 Run tool ripgrep: rg os\.environ\.get|os\.getenv .? n
-[I] samstevens@localhoster ~/D/shgod (main)>
+[I] samstevens@localhoster ~/D/shhelp (main)>
 ```
 
 Rather than exiting, I would rather give the user a chance to explain why you don't want to run that tool.

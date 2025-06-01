@@ -6,7 +6,7 @@ import beartype
 import litellm
 
 _LOG_BASE = pathlib.Path(
-    os.getenv("SHGOD_LOGDIR", "~/.local/state/shgod/logs")
+    os.getenv("SHHELP_LOGDIR", "~/.local/state/shhelp/logs")
 ).expanduser()
 
 Message = dict[str, object]

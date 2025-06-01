@@ -45,5 +45,5 @@ just test
 
 # do run
 uv run ruff format --preview .
-uv run pytest --cov shgod --cov-report term
+uv run pytest --cov shhelp --cov-report term
 ```

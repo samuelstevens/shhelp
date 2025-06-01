@@ -1,5 +1,5 @@
 [project]
-name = "shgod"
+name = "shhelp"
 version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
@@ -13,11 +13,11 @@ dependencies = [
 
 
 [project.urls]
-Homepage = "https://github.com/samuelstevens/shgod"
-Issues = "https://github.com/samuelstevens/shgod/issues"
+Homepage = "https://github.com/samuelstevens/shhelp"
+Issues = "https://github.com/samuelstevens/shhelp/issues"
 
 [project.scripts]
-shgod = "shgod.cli:main"
+shh = "shhelp.cli:main"
 
 [dependency-groups]
 dev = [

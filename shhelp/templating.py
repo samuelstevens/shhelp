@@ -231,9 +231,17 @@ class Parser:
 
     def _segment(self) -> Node:
         if self.tokens.match("TEXT"):
-            return Text(self.tokens.prev().text)
+            return self._text()
+        elif self.tokens.match("VAR"):
+            return self._var()
         else:
             breakpoint()
+
+    def _text(self) -> Text:
+        return Text(self.tokens.prev().text)
+
+    def _var(self) -> Var:
+        breakpoint()
 
     def _parse_if(self):
         _, cond = self.cur.text.split(None, 2)  # "if cond"

@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import sys
+import typing
 
 import beartype
 import tyro
@@ -48,16 +49,21 @@ class Context:
 
 
 @beartype.beartype
-def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
+def cli(
+    words: list[str],
+    /,
+    cfg: typing.Annotated[config.Config, tyro.conf.arg(name="")] = config.Config(),
+    context: bool = True,
+) -> int:
     """
     Ask an LLM for help with shell commands.
 
     Args:
         words: Your query.
     """
-    import litellm
-
     cfg = config.load(cfg)
+
+    import litellm
 
     if not litellm.supports_function_calling(cfg.model):
         print(f"Error: The model '{cfg.model}' does not support function calling.")
@@ -65,19 +71,19 @@ def cli(words: list[str], /, cfg: config.Config = config.Config()) -> int:
         return 1
 
     query = " ".join(words)
-    ctx = Context()
-
     # Need templating
     from . import templating
 
     template = templating.Template(pathlib.Path(__file__).parent / "prompt.j2")
+    ctx = Context()
 
     system = template.render(
         active_pane=ctx.active,
-        # panes=ctx.panes,
+        panes=ctx.panes,
         system=ctx.system,
         shell=ctx.shell,
         aliases=ctx.aliases,
+        context=context,
     )
 
     # Need llms
