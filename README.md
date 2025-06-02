@@ -6,10 +6,12 @@ You can ask it how to do something in your shell, or for explanations of specifi
 
 # TODO
 
-* Async client session error
+* Expand `~`.
 * Multiple MCP servers + no hard-coded voyager
 * Markdown formatting in terminal
+* ptk.HTML blows up on & in input.
 * Streaming??
+* https://github.com/JohannesKaufmann/html-to-markdown for fetch as `.md`.
 
 ## Example Usage
 
@@ -32,6 +34,8 @@ shh whats the difference between os.environ.get and os.getenv in python
 ```sh
 shh where do typical unix programs store REPL history on unix?
 ```
+
+# Example Interactions
 
 ```sh
 [I] samstevens@localhoster ~> shh "sshelp is a tool I'm working on at /Users/samstevens/Development/shhelp. What's the default model according to the source code, and what model do I have set by default in my config file?"

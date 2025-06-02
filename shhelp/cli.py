@@ -61,7 +61,6 @@ async def cli(
             context=context,
         )
 
-        conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
         conversation.system(system)
         conversation.user(query)
 

@@ -5,6 +5,8 @@ import pathlib
 import beartype
 import litellm
 
+litellm.disable_aiohttp_transport = True
+
 _LOG_BASE = pathlib.Path(
     os.getenv("SHHELP_LOGDIR", "~/.local/state/shhelp/logs")
 ).expanduser()
@@ -53,7 +55,10 @@ class Conversation:
 
     async def send(self, *, tools: list[Tool] | None = None):
         resp = await litellm.acompletion(
-            model=self._model, messages=self._msgs, tools=tools, api_key=self._api_key
+            model=self._model,
+            messages=self._msgs,
+            tools=tools,
+            api_key=self._api_key,
         )
         msg = resp.choices[0].message
         self._push({
