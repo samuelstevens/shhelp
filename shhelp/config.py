@@ -72,12 +72,12 @@ def load(cli: Config) -> Config:
     if env_key := os.getenv("SHHELP_API_KEY"):
         cfg_dict["api_key"] = env_key
 
-    breakpoint()
+    if isinstance(cfg_dict.get("mcp_servers"), dict):
+        raise ValueError(
+            f"Invalid configuration format for 'mcp_servers'. You likely used [mcp_servers] in your config.toml file, but TOML requires [[mcp_servers]] (double brackets) for array of tables. Please update your configuration file at {_CFG_PATH}"
+        )
 
-    if isinstance(cfg_dict['mcp_servers'], dict):
-        # Likely, the user put [mcp_servers] instead of [[mcp_servers]] in their config.toml. Explain this to them and throw an error. AI!
-
-    cfg_dict["mcp_servers"] = [McpServer(**d) for d in cfg_dict["mcp_servers"]]
+    cfg_dict["mcp_servers"] = [McpServer(**d) for d in cfg_dict.get("mcp_servers", [])]
 
     cfg = Config(**cfg_dict)
 
