@@ -14,10 +14,12 @@ class McpServer:
     """MCP server configuration.
 
     Attributes:
+        name: Name, for LLM to reference a particular tool.
         cmd: Binary to run.
         args: Arguments.
     """
 
+    name: str
     cmd: str
     args: list[str]
 

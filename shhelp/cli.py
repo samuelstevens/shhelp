@@ -37,15 +37,8 @@ async def cli(
     query = " ".join(words)
 
     async with contextlib.AsyncExitStack() as stack:
-        stdio = await stack.enter_async_context(
-            mcp.client.stdio.stdio_client(
-                mcp.StdioServerParameters(
-                    command="/Users/samstevens/go/bin/voyager", args=[]
-                )
-            )
-        )
-        session = await stack.enter_async_context(mcp.ClientSession(*stdio))
-        await session.initialize()
+        manager = McpServerManager()
+        await manager.initialize(stack, cfg.mcp_servers)
 
         conversation = llms.Conversation(model=cfg.model, api_key=cfg.api_key)
 
@@ -64,15 +57,7 @@ async def cli(
         conversation.system(system)
         conversation.user(query)
 
-        response = await session.list_tools()
-        tools = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.inputSchema,
-            }
-            for tool in response.tools
-        ]
+        tools = await manager.list_tools()
 
         while True:
             toks, usd = conversation.get_costs()
@@ -95,7 +80,7 @@ async def cli(
                     if await ui.confirm(
                         f"Run tool <cmd>{tc.function.name}</cmd> with args <cmd>{kwargs}</cmd>? [Y/n]:"
                     ):
-                        result = await session.call_tool(tc.function.name, kwargs)
+                        result = await manager.call_tool(tc.function.name, kwargs)
                         for content in result.content:
                             ui.echo(content.text)
                             conversation.tool(content.text, tool_call_id=tc.id)
@@ -122,6 +107,44 @@ class McpSession(typing.Protocol):
     async def initialize(self) -> None: ...
     async def list_tools(self): ...  # returns .tools iterable
     async def call_tool(self, name: str, arguments: dict[str, object]): ...
+
+
+@beartype.beartype
+class McpServerManager:
+    def __init__(self):
+        self.sessions = {}
+        self.tools_map = {}  # Maps prefixed tool names to (session, original_name)
+
+    async def initialize(self, stack, servers: list[config.McpServer]):
+        for server in servers:
+            stdio = await stack.enter_async_context(
+                mcp.client.stdio.stdio_client(
+                    mcp.StdioServerParameters(command=server.cmd, args=server.args)
+                )
+            )
+            session = await stack.enter_async_context(mcp.ClientSession(*stdio))
+            await session.initialize()
+            self.sessions[server.name] = session
+
+    async def list_tools(self):
+        all_tools = []
+        for server_name, session in self.sessions.items():
+            response = await session.list_tools()
+            for tool in response.tools:
+                prefixed_name = f"{server_name}_{tool.name}"
+                all_tools.append({
+                    "name": prefixed_name,
+                    "description": tool.description,
+                    "input_schema": tool.inputSchema,
+                })
+                self.tools_map[prefixed_name] = (session, tool.name)
+        return all_tools
+
+    async def call_tool(self, prefixed_name, arguments):
+        if prefixed_name not in self.tools_map:
+            raise ValueError(f"Unknown tool: {prefixed_name}")
+        session, original_name = self.tools_map[prefixed_name]
+        return await session.call_tool(original_name, arguments)
 
 
 def main():
