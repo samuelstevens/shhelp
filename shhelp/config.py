@@ -10,6 +10,20 @@ _CFG_PATH = pathlib.Path("~/.config/shhelp/config.toml").expanduser()
 
 @beartype.beartype
 @dataclasses.dataclass(frozen=True)
+class McpServer:
+    """MCP server configuration.
+
+    Attributes:
+        cmd: Binary to run.
+        args: Arguments.
+    """
+
+    cmd: str
+    args: list[str]
+
+
+@beartype.beartype
+@dataclasses.dataclass(frozen=True)
 class Config:
     """Runtime options that rarely change between invocations.
 
@@ -17,12 +31,13 @@ class Config:
         api_key: Secret for your LLM backend (OpenAI / Anthropic / etc.). Default None, which falls back to env var `SHHELP_API_KEY` or backend-specific vars like `OPENAI_API_KEY`.
         model: Identifier sent to the provider, e.g. ``gpt-4o-mini``.
         history_lines: How many lines of tmux scrollback to include in the prompt.
+        mcp_servers: Server configuration.
     """
 
     api_key: str = ""
     model: str = "gpt-4.1-mini"
     history_lines: int = 200  # reasonable default
-    mcp_servers: list[str] = dataclasses.field(default_factory=list)
+    mcp_servers: list[McpServer] = dataclasses.field(default_factory=list)
 
 
 @beartype.beartype
@@ -56,6 +71,13 @@ def load(cli: Config) -> Config:
 
     if env_key := os.getenv("SHHELP_API_KEY"):
         cfg_dict["api_key"] = env_key
+
+    breakpoint()
+
+    if isinstance(cfg_dict['mcp_servers'], dict):
+        # Likely, the user put [mcp_servers] instead of [[mcp_servers]] in their config.toml. Explain this to them and throw an error. AI!
+
+    cfg_dict["mcp_servers"] = [McpServer(**d) for d in cfg_dict["mcp_servers"]]
 
     cfg = Config(**cfg_dict)
 
