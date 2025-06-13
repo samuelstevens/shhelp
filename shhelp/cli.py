@@ -61,7 +61,7 @@ async def cli(
 
         while True:
             toks, usd = conversation.get_costs()
-            if not await ui.confirm_next_request(toks, usd):
+            if not ui.confirm_next_request(toks, usd):
                 break
 
             msg = await conversation.send(tools=tools)
@@ -77,15 +77,15 @@ async def cli(
             for tc in msg.tool_calls:
                 try:
                     kwargs = json.loads(tc.function.arguments)
-                    if await ui.confirm(
-                        f"Run tool <cmd>{tc.function.name}</cmd> with args <cmd>{kwargs}</cmd>? [Y/n]:"
+                    if ui.confirm(
+                        f"Run tool [cmd]{tc.function.name}[/cmd] with args [cmd]{kwargs}[/cmd]? [Y/n]:"
                     ):
                         result = await manager.call_tool(tc.function.name, kwargs)
                         for content in result.content:
                             ui.echo(content.text)
                             conversation.tool(content.text, tool_call_id=tc.id)
                     else:
-                        note = await ui.ask_tool_skip_reason(tc.function.name)
+                        note = ui.ask_tool_skip_reason(tc.function.name)
                         deny_notes.append(f"{tc.function.name}: {note}")
                         conversation.tool(f"denied by user: {note}", tool_call_id=tc.id)
                 except Exception as err:
@@ -95,9 +95,6 @@ async def cli(
             if deny_notes:
                 conversation.user("\n".join(deny_notes))
 
-        await asyncio.sleep(0.1)
-
-    await asyncio.sleep(0.1)
     return 0
 
 

@@ -1,20 +1,18 @@
 import beartype
-import prompt_toolkit as ptk
+import rich.console
+import rich.markdown
+import rich.theme
 
-from . import unix
-
-_STYLE = ptk.styles.Style.from_dict({
-    "hl": "ansicyan",
-    "cost": "ansigreen",
-    "warn": "bold ansired",
+# theme for console markup styles
+_THEME = rich.theme.Theme({
+    "highlight": "cyan",
+    "cost": "green",
+    "warn": "bold red",
     "prompt": "bold",
-    "cmd": "italic ansiyellow",
+    "cmd": "italic yellow",
 })
 
-_SESSION = ptk.PromptSession(
-    history=ptk.history.FileHistory(str(unix.get_history_path())),
-    style=_STYLE,
-)
+_CONSOLE = rich.console.Console(theme=_THEME)
 
 ###########
 # Generic #
@@ -22,46 +20,45 @@ _SESSION = ptk.PromptSession(
 
 
 @beartype.beartype
-def echo(html: str) -> None:
-    """Write a line outside the input buffer (non-blocking)."""
-    try:
-        ptk.print_formatted_text(ptk.HTML(html), style=_STYLE)  # safe with PTK
-    except Exception as err:
-        breakpoint()
-        print(err)
+def echo(md: str) -> None:
+    """Write a line to the console."""
+    _CONSOLE.print(rich.markdown.Markdown(md))
 
 
 @beartype.beartype
-async def confirm(html: str, *, default_yes: bool = True) -> bool:
+def confirm(markup: str, *, default_yes: bool = True) -> bool:
+    """Prompt the user for a yes/no answer, returning True if yes."""
     yes_set = {"y", "yes"}
     if default_yes:
         yes_set.add("")
+    prompt_text = f"[prompt]{markup}[/prompt] "
     try:
-        ans = await _SESSION.prompt_async(ptk.HTML(f"<prompt>{html}</prompt> "))
-    except EOFError:  # Ctrl-D
+        ans = _CONSOLE.input(prompt_text)
+    except EOFError:
         return False
 
-    ans = ans.strip().lower()
-    return ans in yes_set
+    return ans.strip().lower() in yes_set
 
 
 # shhelp-specific
 
 
 @beartype.beartype
-async def confirm_next_request(tokens: int, cost_usd: float) -> bool:
+def confirm_next_request(tokens: int, cost_usd: float) -> bool:
+    """Ask the user to confirm proceeding with the next request cost."""
     msg = (
-        f"<highlight>Next request</highlight>: <cost>{tokens} tok  ${cost_usd:.2f}</cost>\n"
+        f"[highlight]Next request[/highlight]: [cost]{tokens} tok  ${cost_usd:.2f}[/cost]\n"
         "continue? [Y/n]:"
     )
-    return await confirm(msg)
+    return confirm(msg)
 
 
 @beartype.beartype
-async def ask_tool_skip_reason(tool: str) -> str:
+def ask_tool_skip_reason(tool: str) -> str:
     """Return the user's reason for denying a tool."""
+    prompt_text = "[prompt]Why?[/prompt] "
     try:
-        ans = await _SESSION.prompt_async(ptk.HTML("<prompt>Why?</prompt> "))
+        ans = _CONSOLE.input(prompt_text)
     except EOFError:
         return ""
     return ans.strip()

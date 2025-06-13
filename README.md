@@ -7,7 +7,6 @@ You can ask it how to do something in your shell, or for explanations of specifi
 # TODO
 
 * Markdown formatting in terminal
-* ptk.HTML blows up on & in input.
 * Streaming??
 * https://github.com/JohannesKaufmann/html-to-markdown for fetch as `.md`.
 
